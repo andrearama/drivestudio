@@ -83,6 +83,7 @@ class VanillaGaussians(nn.Module):
         distances = torch.from_numpy(distances)
         # find the average of the three nearest neighbors for each point and use that as the scale
         avg_dist = distances.mean(dim=-1, keepdim=True).to(self.device)
+        avg_dist = avg_dist.clamp_min(1e-3)
         if self.ball_gaussians:
             self._scales = Parameter(torch.log(avg_dist.repeat(1, 1)))
         else:

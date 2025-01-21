@@ -215,10 +215,10 @@ def main(args):
         "RigidNodes_rgbs",
         "DeformableNodes_rgbs",
         "SMPLNodes_rgbs",
-        # "depths",
-        # "Background_depths",
-        # "RigidNodes_depths",
-        # "DeformableNodes_depths",
+        "depths",
+        "Background_depths",
+        "RigidNodes_depths",
+        "DeformableNodes_depths",
         # "SMPLNodes_depths",
         # "mask"
     ]

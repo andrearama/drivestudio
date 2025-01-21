@@ -9,8 +9,8 @@ from PIL import Image
 from pyquaternion import Quaternion
 from tqdm import tqdm
 
-from nuscenes.nuscenes import LidarPointCloud, NuScenes
-from nuscenes.utils.data_classes import Box
+from nuscenes.nuscenes import NuScenes
+from nuscenes.utils.data_classes import Box, LidarPointCloud
 from nuscenes.utils.geometry_utils import view_points
 
 from datasets.tools.multiprocess_utils import track_parallel_progress
