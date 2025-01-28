@@ -334,7 +334,8 @@ class BasicTrainer(nn.Module):
             camtoworlds_gt=camtoworlds_gt,
             Ks=camera_infos["intrinsics"],
             H=camera_infos["height"],
-            W=camera_infos["width"]
+            W=camera_infos["width"],
+            cam_displacement= camera_infos['cam_displacement']
         )
         
         return camera_dict
@@ -460,7 +461,7 @@ class BasicTrainer(nn.Module):
         Returns:
             Dict[str, torch.Tensor]: output of the model
         """
-
+        
         # for evaluation
         for model in self.models.values():
             if hasattr(model, 'in_test_set'):

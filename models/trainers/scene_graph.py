@@ -6,6 +6,8 @@ from datasets.driving_dataset import DrivingDataset
 from models.trainers.base import BasicTrainer, GSModelType
 from utils.misc import import_str
 from utils.geometry import uniform_sample_sphere
+from models.gaussians.basics import dataclass_gs, dataclass_camera
+
 
 logger = logging.getLogger()
 
@@ -208,6 +210,7 @@ class MultiTrainer(BasicTrainer):
         Returns:
             Dict[str, torch.Tensor]: output of the model
         """
+      
 
         # set current time or use temporal smoothing
         normed_time = image_infos["normed_time"].flatten()[0]
@@ -227,20 +230,57 @@ class MultiTrainer(BasicTrainer):
                 model.set_cur_frame(self.cur_frame)
         
         # prapare data
-        processed_cam = self.process_camera(
+        self.processed_cam = self.process_camera(
             camera_infos=camera_infos,
             image_ids=image_infos["img_idx"].flatten()[0],
             novel_view=novel_view
         )
-        gs = self.collect_gaussians(
-            cam=processed_cam,
-            image_ids=image_infos["img_idx"].flatten()[0]
-        )
+    
+        if self.render_cfg.avg_renderings == True and isinstance(self.render_cfg.avg_renderings_scale, float):
+            left_cam = self.process_camera(
+                camera_infos=camera_infos,
+                image_ids=image_infos["img_idx"].flatten()[0],
+                novel_view=novel_view
+            )
+            left_cam.camtoworlds[:3, 3] -= self.render_cfg.avg_renderings_scale * left_cam.cam_displacement
 
+            right_cam = self.process_camera(
+                camera_infos=camera_infos,
+                image_ids=image_infos["img_idx"].flatten()[0],
+                novel_view=novel_view
+            )
+            right_cam.camtoworlds[:3, 3] += self.render_cfg.avg_renderings_scale * right_cam.cam_displacement
+            
+            outputs = []
+
+            for idx, pc_displaced in enumerate([left_cam, self.processed_cam, right_cam]):
+                gs_displaced = self.collect_gaussians(
+                    cam=pc_displaced,
+                    image_ids=image_infos["img_idx"].flatten()[0]
+                )
+                outputs.append(self.render_outputs(image_infos, gs_displaced, pc_displaced))
+
+            final_output = {}
+            for output_key in outputs[0].keys():
+                stacked_tensors = torch.stack([output[output_key] for output in outputs])
+                final_output[output_key] = stacked_tensors.mean(dim=0)
+
+        else:
+            gs = self.collect_gaussians(cam=self.processed_cam, image_ids=image_infos["img_idx"].flatten()[0])
+            final_output = self.render_outputs(image_infos, gs, self.processed_cam)
+
+        return final_output
+
+    def render_outputs(
+        self,
+        image_infos: Dict[str, torch.Tensor], 
+        gs_displaced: dataclass_gs,
+        pc_displaced: dataclass_camera,
+    )  -> Dict[str, torch.Tensor]:
         # render gaussians
         outputs, render_fn = self.render_gaussians(
-            gs=gs,
-            cam=processed_cam,
+            gs=gs_displaced,
+            cam=pc_displaced,
             near_plane=self.render_cfg.near_plane,
             far_plane=self.render_cfg.far_plane,
             render_mode="RGB+ED",
@@ -275,6 +315,7 @@ class MultiTrainer(BasicTrainer):
                 outputs["Dynamic_depth"] = sep_depth
         
         return outputs
+
 
     def compute_losses(
         self,
