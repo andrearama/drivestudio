@@ -234,19 +234,14 @@ def main(args):
                 verbose=False,
             )
 
-            gt_rgb = vis_frame_dict["gt_rgbs"]  # (H, W, C), NumPy-Array
-            rgb = vis_frame_dict["rgbs"]
-            combined_image = np.concatenate((gt_rgb, rgb), axis=1)  # (H, 2*W, C)
+            # log images to tensorboard
+            rgb_eval_image = np.concatenate((vis_frame_dict["gt_rgbs"], vis_frame_dict["rgbs"]), axis=1)  
 
-            # Falls Bilder in 0-255 Werten vorliegen, auf 0-1 normalisieren
-            if combined_image.max() > 1:
-                combined_image = combined_image / 255.0
+            if rgb_eval_image.max() > 1:
+                rgb_eval_image = rgb_eval_image / 255.0
 
-            # Umwandeln in Torch-Tensor und in (C, H, W) bringen
-            combined_image = torch.from_numpy(combined_image).permute(2, 0, 1)  # (C, H, W)
-
-            # Bild in TensorBoard loggen
-            writer.add_image('rgb_comparison', combined_image, step)
+            rgb_eval_image = torch.from_numpy(rgb_eval_image).permute(2, 0, 1)
+            writer.add_image('rgb_evaluation/rgb_evaluation_step_'+ str(step), rgb_eval_image, step)
 
             if args.enable_wandb:
                 for k, v in vis_frame_dict.items():
