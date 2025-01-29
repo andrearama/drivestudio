@@ -15,6 +15,7 @@ from utils.backup import backup_project
 from utils.logging import MetricLogger, setup_logging
 from models.video_utils import render_images, save_videos
 from datasets.driving_dataset import DrivingDataset
+from torch.utils.tensorboard import SummaryWriter
 
 logger = logging.getLogger()
 current_time = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
@@ -121,6 +122,9 @@ def main(args):
         scene_aabb=dataset.get_aabb().reshape(2, 3),
         device=device
     )
+
+    #setup writer for tensorboard
+    writer = SummaryWriter(log_dir=cfg.log_dir)
     
     # NOTE: If resume, gaussians will be loaded from checkpoint
     #       If not, gaussians will be initialized from dataset
@@ -229,6 +233,21 @@ def main(args):
                 fps=cfg.render.fps,
                 verbose=False,
             )
+
+            gt_rgb = vis_frame_dict["gt_rgbs"]  # (H, W, C), NumPy-Array
+            rgb = vis_frame_dict["rgbs"]
+            combined_image = np.concatenate((gt_rgb, rgb), axis=1)  # (H, 2*W, C)
+
+            # Falls Bilder in 0-255 Werten vorliegen, auf 0-1 normalisieren
+            if combined_image.max() > 1:
+                combined_image = combined_image / 255.0
+
+            # Umwandeln in Torch-Tensor und in (C, H, W) bringen
+            combined_image = torch.from_numpy(combined_image).permute(2, 0, 1)  # (C, H, W)
+
+            # Bild in TensorBoard loggen
+            writer.add_image('rgb_comparison', combined_image, step)
+
             if args.enable_wandb:
                 for k, v in vis_frame_dict.items():
                     wandb.log({"image_rendering/" + k: wandb.Image(v)})
@@ -287,6 +306,15 @@ def main(args):
         metric_logger.update(**{"train_stats/lr_" + group['name']: group['lr'] for group in trainer.optimizer.param_groups})
         if args.enable_wandb:
             wandb.log({k: v.avg for k, v in metric_logger.meters.items()})
+
+
+        #-----------------------  logging to tensorboard  ---------------------------
+        for k, v in metric_dict.items():
+            writer.add_scalar(f"train_metrics/{k}", v.item(), step)
+        
+        for k, v in loss_dict.items():
+            writer.add_scalar(f"losses/{k}", v.item(), step)
+        
 
         #----------------------------------------------------------------------------
         #----------------------------     Saving     --------------------------------
@@ -347,7 +375,9 @@ def main(args):
     if args.enable_viewer:
         print("Viewer running... Ctrl+C to exit.")
         time.sleep(1000000)
-    
+
+    writer.close()
+
     return step
 
 if __name__ == "__main__":
