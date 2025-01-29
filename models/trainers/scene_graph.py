@@ -2,6 +2,7 @@ from typing import Dict
 import torch
 import logging
 
+import torch.nn.functional as F
 from datasets.driving_dataset import DrivingDataset
 from models.trainers.base import BasicTrainer, GSModelType
 from utils.misc import import_str
@@ -256,12 +257,24 @@ class MultiTrainer(BasicTrainer):
         outputs["rgb"] = self.affine_transformation(
             outputs["rgb_gaussians"] + outputs["rgb_sky"] * (1.0 - outputs["opacity"]), image_infos
         )
+
+        outputs["custom_tensor"] = self.custom_tensor
+        if list(outputs["rgb"].shape) == [450, 800, 3] : 
+        
+            outputs["rgb_light_effect"], outputs["rgb_light_mask"] = self.simulate_light_sources(outputs["emitted_light"])
+            #outputs["rgb"] = outputs["rgb"] + outputs["rgb_light_effect"] + outputs["custom_tensor"]
+
+            outputs["rgb"] = self.raw_to_srgb(outputs["rgb"]) + outputs["custom_tensor"] + torch.abs(outputs["emitted_light"]) + outputs["rgb_light_effect"]
+            outputs["rgb_light_mask"] = outputs["emitted_light"]
+            print("MAX MAX",torch.abs(outputs["emitted_light"]).max())
+
+            #outputs["rgb"] = torch.clamp(outputs["rgb"] , min=0, max=1)
         
         if not self.training and self.render_each_class:
             with torch.no_grad():
                 for class_name in self.gaussian_classes.keys():
                     gaussian_mask = self.pts_labels == self.gaussian_classes[class_name]
-                    sep_rgb, sep_depth, sep_opacity = render_fn(gaussian_mask)
+                    sep_rgb, sep_depth, sep_opacity, emtted_light = render_fn(gaussian_mask)
                     outputs[class_name+"_rgb"] = self.affine_transformation(sep_rgb, image_infos)
                     outputs[class_name+"_opacity"] = sep_opacity
                     outputs[class_name+"_depth"] = sep_depth
@@ -269,7 +282,7 @@ class MultiTrainer(BasicTrainer):
         if not self.training or self.render_dynamic_mask:
             with torch.no_grad():
                 gaussian_mask = self.pts_labels != self.gaussian_classes["Background"]
-                sep_rgb, sep_depth, sep_opacity = render_fn(gaussian_mask)
+                sep_rgb, sep_depth, sep_opacity, emtted_light = render_fn(gaussian_mask)
                 outputs["Dynamic_rgb"] = self.affine_transformation(sep_rgb, image_infos)
                 outputs["Dynamic_opacity"] = sep_opacity
                 outputs["Dynamic_depth"] = sep_depth
@@ -294,3 +307,108 @@ class MultiTrainer(BasicTrainer):
         metric_dict = super().compute_metrics(outputs, image_infos)
         
         return metric_dict
+
+    def simulate_light_sources_o(self, image):
+        """
+        Simulate the effect of light sources in an image.
+
+        Args:
+            image (torch.Tensor): Input image tensor of shape [W, H, 3].
+
+        Returns:
+            torch.Tensor: Image with simulated light effects.
+        """
+        # Step 1: Identify light sources (all channels > 0.9)
+        light_mask = (image > 0.9).all(dim=-1).float()  # Shape: [W, H]
+
+        # Step 2: Apply 1D convolution to spread light effect
+        x = torch.arange(self.kernel_size) - self.kernel_size // 2
+        gaussian = torch.exp(-(x.to(self.device)**2) / (2 * self.sigma_kernel**2))
+        gaussian = gaussian / gaussian.sum()  # torch.Size([150])        
+        
+        kernel = gaussian.view(1, 1, -1)  # Shape: [out_channels, in_channels, kernel_size]
+
+        print("self.sigma_kernel",self.sigma_kernel)
+        print(f"self.sigma_kernel: {self.sigma_kernel.item():.16f}")
+
+        # Calculate padding to ensure output size matches input size
+        padding = (self.kernel_size ) // 2
+
+        # Convolve the light mask column-by-column (vertical spread)
+        light_effect = F.conv1d(
+            light_mask.t().unsqueeze(1),  # Transpose to [H, 1, W]
+            kernel,
+            padding=padding,
+        ).squeeze(1).t()  # Transpose back to [W, H]
+
+        # Step 3: Add the light effect back to the original image
+        light_effect = light_effect.unsqueeze(-1).repeat(1, 1, 3)  # Broadcasting to [W, H, 3]
+
+        print("light_mask",torch.sum(light_mask) )
+
+        return light_effect, light_mask
+
+    def simulate_light_sources(self, image):
+        """
+        Simulate the effect of light sources in an image by applying 1D convolution
+        to each channel of the image.
+
+        Args:
+            image (torch.Tensor): Input image tensor of shape [W, H, 3].
+
+        Returns:
+            torch.Tensor: Image with simulated light effects.
+        """
+        # Step 1: Prepare the Gaussian kernel
+        x = torch.arange(self.kernel_size) - self.kernel_size // 2
+        gaussian = torch.exp(-(x.to(self.device)**2) / (2 * self.sigma_kernel**2))
+        gaussian = gaussian / gaussian.sum()  # Normalize the kernel
+        kernel = gaussian.view(1, 1, -1)  # Shape: [out_channels, in_channels, kernel_size]
+
+        # Calculate padding to ensure the output size matches the input size
+        padding = (self.kernel_size) // 2
+
+        # Step 2: Apply convolution to each channel independently
+        convolved_channels = []
+        for c in range(image.shape[-1]):  # Iterate over channels (R, G, B)
+            channel = image[..., c]  # Shape: [W, H]
+
+            # Reshape channel for convolution
+            channel = channel.unsqueeze(0).unsqueeze(0)  # Shape: [1, 1, W, H]
+
+            # Apply vertical convolution
+            convolved_v = F.conv2d(
+                channel,
+                kernel.unsqueeze(0).transpose(-1, -2),  # Shape: [1, 1, kernel_size, 1]
+                padding=(padding, 0)
+            ).squeeze(0).squeeze(0)  # Shape: [W, H]
+
+            # Combine horizontal and vertical convolutions
+            convolved_channel = convolved_v 
+
+            convolved_channels.append(convolved_channel)
+
+        # Combine the convolved channels back into an image
+        convolved_image = torch.stack(convolved_channels, dim=-1)  # Shape: [W, H, 3]
+
+        return convolved_image , (image > 0.9).all(dim=-1).float()   # Ensure pixel values are in a valid range
+    
+
+    def raw_to_srgb(self, x) : 
+        
+        # 1. White Balance
+        wb_corrected = x * self.wb_gain + 1e-7
+        
+        # 2. Color Matrix Transformation
+        color_transformed = torch.matmul(wb_corrected, self.color_matrix.t())
+        
+        # 3. Clip to prevent out-of-range values
+        #color_transformed = torch.clamp(color_transformed, 0.0, 1.0)
+        #color_transformed = torch.abs(color_transformed)
+        color_transformed = torch.clamp(x, 0.0001, 3.0)
+        
+        # 4. Gamma Correction (sRGB)
+        srgb = torch.pow(color_transformed, 1.0 / 2.2)
+        
+        return x         
+    

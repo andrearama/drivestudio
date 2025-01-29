@@ -172,6 +172,22 @@ class BasicTrainer(nn.Module):
         raise NotImplementedError("Please implement the _init_models function")
     
     def initialize_optimizer(self) -> None:
+
+        self.custom_tensor = torch.nn.Parameter(0.1*torch.randn(450, 800, 3).to(self.device))
+        
+        self.kernel_size = 149  # Adjust for light spread
+        self.sigma_kernel = torch.nn.Parameter(torch.tensor(5.0, device=self.device))
+
+        # White balance parameters (learnable)
+        self.wb_gain = nn.Parameter(torch.tensor([1.0, 1.0, 1.0]).to(self.device))
+        
+        # Color matrix for linear color space conversion (learnable)
+        self.color_matrix = nn.Parameter(torch.tensor([
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0]
+        ], dtype=torch.float32).to(self.device))        
+
         # get param groups first
         self.param_groups = {}
         for class_name, model in self.models.items():
@@ -222,6 +238,38 @@ class BasicTrainer(nn.Module):
                 # adjust max_steps to account for opt_after
                 sched_cfg.max_steps = sched_cfg.max_steps - sched_cfg.opt_after
                 lr_schedulers[params_name] = lr_scheduler_fn(sched_cfg, lr_init)
+
+        groups.append({
+            'params': [self.custom_tensor],
+            'name': 'custom_tensor',
+            'lr': 0.0005,
+            'eps': 1e-15,
+            'weight_decay': 0
+        })    
+
+        groups.append({
+            'params': [self.sigma_kernel],
+            'name': 'sigma_kernel',
+            'lr': 0.0005,
+            'eps': 1e-15,
+            'weight_decay': 0
+        })    
+
+        groups.append({
+            'params': [self.wb_gain],
+            'name': 'wb_gain',
+            'lr': 0.0001,
+            'eps': 1e-15,
+            'weight_decay': 0
+        })    
+
+        groups.append({
+            'params': [self.color_matrix],
+            'name': 'color_matrix',
+            'lr': 0.0001,
+            'eps': 1e-15,
+            'weight_decay': 0
+        })            
 
         self.optimizer = torch.optim.Adam(groups, lr=0.0, eps=1e-15)
         self.lr_schedulers = lr_schedulers
@@ -410,20 +458,28 @@ class BasicTrainer(nn.Module):
             alphas = alphas[0].squeeze(-1)
             assert self.render_cfg.batch_size == 1, "batch size must be 1, will support batch size > 1 in the future"
             
-            assert renders.shape[-1] == 4, f"Must render rgb, depth and alpha"
-            rendered_rgb, rendered_depth = torch.split(renders, [3, 1], dim=-1)
+            if renders.shape[-1] == 4:
+                rendered_rgb, rendered_depth = torch.split(renders, [3, 1], dim=-1)
+                rendered_emtted_light = False
+            elif renders.shape[-1] == 7:
+                rendered_rgb, rendered_emtted_light, rendered_depth = torch.split(renders, [3, 3, 1], dim=-1)
+            else:
+                print(renders.shape[-1])
+                assert False
+
             
             if not return_info:
-                return torch.clamp(rendered_rgb, max=1.0), rendered_depth, alphas[..., None]
+                return torch.clamp(rendered_rgb, max=1.0), rendered_depth, alphas[..., None], rendered_emtted_light
             else:
-                return torch.clamp(rendered_rgb, max=1.0), rendered_depth, alphas[..., None], info
+                return torch.clamp(rendered_rgb, max=1.0), rendered_depth, alphas[..., None], rendered_emtted_light, info
         
         # render rgb and opacity
-        rgb, depth, opacity, self.info = render_fn(return_info=True)
+        rgb, depth, opacity, emtted_light, self.info = render_fn(return_info=True)
         results = {
             "rgb_gaussians": rgb,
             "depth": depth, 
-            "opacity": opacity
+            "opacity": opacity,
+            "emitted_light":emtted_light
         }
         
         if self.training:
@@ -439,7 +495,6 @@ class BasicTrainer(nn.Module):
         if "Affine" in self.models:
             affine_trs = self.models['Affine'](image_infos)
             rgb_transformed = (affine_trs[..., :3, :3] @ rgb_blended[..., None] + affine_trs[..., :3, 3:])[..., 0]
-            
             return rgb_transformed
         else:       
             return rgb_blended
@@ -488,6 +543,7 @@ class BasicTrainer(nn.Module):
         )
         
         # render sky
+        asd
         sky_model = self.models['Sky']
         outputs["rgb_sky"] = sky_model(image_infos)
         outputs["rgb_sky_blend"] = outputs["rgb_sky"] * (1.0 - outputs["opacity"])
@@ -536,8 +592,16 @@ class BasicTrainer(nn.Module):
         gt_occupied_mask = (1.0 - image_infos["sky_masks"]).float() * valid_loss_mask
         pred_occupied_mask = outputs["opacity"].squeeze() * valid_loss_mask
         
+        #custom_tensor loss : 
+        if "custom_tensor" in outputs : 
+            custom_tensor_loss = get_loss_normal_tensor(outputs["custom_tensor"])
+            #print("custom_tensor_loss",custom_tensor_loss)
+            loss_dict.update({"custom_tensor_loss" : custom_tensor_loss})
+
         # rgb loss
-        Ll1 = torch.abs(gt_rgb - predicted_rgb).mean()
+        mask09 = 1.0 - ((gt_rgb > 0.95).float() * (predicted_rgb > 0.95).float())
+        Ll1 = (mask09 * torch.abs(gt_rgb - predicted_rgb)).mean()
+
         simloss = 1 - self.ssim(gt_rgb.permute(2, 0, 1)[None, ...], predicted_rgb.permute(2, 0, 1)[None, ...])
         loss_dict.update({
             "rgb_loss": self.losses_dict.rgb.w * Ll1,
@@ -653,7 +717,7 @@ class BasicTrainer(nn.Module):
         step = state_dict.pop("step")
         self.step = step
         logger.info(f"Loading checkpoint at step {step}")
-
+        asd
         # load optimizer and schedulers
         if "optimizer" in state_dict:
             loaded_state_optimizers = state_dict.pop("optimizer")
@@ -786,3 +850,23 @@ class BasicTrainer(nn.Module):
             radius_clip=4.0,  # skip GSs that have small image radius (in pixels)
         )
         return render_colors[0].cpu().numpy()
+    
+
+
+def get_loss_normal_tensor(tensor) : 
+    
+    # Define the patch size
+    N = torch.randint(low=20,high=50,size=(1,))[0]
+    
+    # Unfold the first two dimensions (W and H) to extract patches
+    patches = tensor.unfold(0, N, N).unfold(1, N, N)  # [W//N, H//N, N, N, 3]
+
+    # Sum over the patches
+    patch_sums = patches.sum(dim=(-3, -2, -1))  # Sum over N, N, and 3 (color channels)
+    #print("Patch sums shape:", patch_sums.shape)  # Should be [W//N, H//N]
+
+    mean = torch.mean(patch_sums)
+    
+    loss = 0.00001 * torch.sum(torch.square(patch_sums - mean ))
+
+    return loss

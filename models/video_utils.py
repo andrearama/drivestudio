@@ -66,6 +66,7 @@ def render_images(
         compute_error_map=compute_error_map,
         vis_indices=vis_indices
     )
+    print("---->",render_results.keys())
     if compute_metrics:
         num_samples = len(dataset) if vis_indices is None else len(vis_indices)
         logger.info(f"Eval over {num_samples} images:")
@@ -117,6 +118,8 @@ def render(
     # misc
     cam_names, cam_ids = [], []
 
+    custom_tensor, rgb_light_effect, rgb_light_mask = [] , [], []
+
     if compute_metrics:
         psnrs, ssim_scores, lpipss = [], [], []
         masked_psnrs, masked_ssims = [], []
@@ -141,7 +144,7 @@ def render(
             
             # ------------- clip rgb ------------- #
             for k, v in results.items():
-                if isinstance(v, Tensor) and "rgb" in k:
+                if isinstance(v, Tensor) and ("rgb" in k or "custom_tensor" in k):
                     results[k] = v.clamp(0., 1.)
             
             # ------------- cam names ------------- #
@@ -158,6 +161,12 @@ def render(
                 
             green_background = torch.tensor([0.0, 177, 64]) / 255.0
             green_background = green_background.to(rgb.device)
+            if "custom_tensor" in results : 
+                custom_tensor.append(get_numpy(results["custom_tensor"]))
+            if "rgb_light_mask" in results : 
+                rgb_light_mask.append(get_numpy(results["rgb_light_mask"]))
+            if "rgb_light_effect" in results : 
+                rgb_light_effect.append(get_numpy(results["rgb_light_effect"]))                
             if "Background_rgb" in results:
                 Background_rgb = results["Background_rgb"] * results[
                     "Background_opacity"
@@ -334,6 +343,12 @@ def render(
     results_dict["depths"] = depths
     results_dict["cam_names"] = cam_names
     results_dict["cam_ids"] = cam_ids
+    if len(custom_tensor) : 
+        results_dict["custom_tensor"] = custom_tensor
+    if len(rgb_light_mask) : 
+        results_dict["rgb_light_mask"] = rgb_light_mask        
+    if len(rgb_light_effect) : 
+        results_dict["rgb_light_effect"] = rgb_light_effect        
     if len(opacities) > 0:
         results_dict["opacities"] = opacities
     if len(gt_rgbs) > 0:
@@ -556,7 +571,7 @@ def save_seperate_videos(
         for i in range(num_timestamps):
             cam_names = render_results["cam_names"][i * num_cams : (i + 1) * num_cams]
             # skip if the key is not in render_results
-            if "mask" in key:
+            if "mask" in key and key != "rgb_light_mask":
                 new_key = key.replace("mask", "opacities")
                 if new_key not in render_results or len(render_results[new_key]) == 0:
                     continue
@@ -568,7 +583,7 @@ def save_seperate_videos(
             # convert to rgb if necessary
             if key == "gt_sky_masks":
                 frames = [np.stack([frame, frame, frame], axis=-1) for frame in frames]
-            elif "mask" in key:
+            elif "mask" in key and key != "rgb_light_mask":
                 frames = [
                     np.stack([frame, frame, frame], axis=-1) for frame in frames
                 ]
@@ -590,6 +605,7 @@ def save_seperate_videos(
                 ]
             tiled_img = layout(frames, cam_names)
             if save_images:
+                asd2
                 if i == 0:
                     os.makedirs(tmp_save_pth.replace(".mp4", ""), exist_ok=True)
                 for j, frame in enumerate(frames):

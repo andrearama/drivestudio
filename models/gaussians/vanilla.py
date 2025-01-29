@@ -71,6 +71,7 @@ class VanillaGaussians(nn.Module):
         self._opacities = torch.zeros(1, 1, device=self.device)
         self._features_dc = torch.zeros(1, 3, device=self.device)
         self._features_rest = torch.zeros(1, num_sh_bases(self.sh_degree) - 1, 3, device=self.device)
+        self._emitting_light = torch.zeros(1, 3, device=self.device)
         
     @property
     def sh_degree(self):
@@ -104,6 +105,7 @@ class VanillaGaussians(nn.Module):
         self._features_dc = Parameter(shs[:, 0, :])
         self._features_rest = Parameter(shs[:, 1:, :])
         self._opacities = Parameter(torch.logit(0.1 * torch.ones(self.num_points, 1, device=self.device)))
+        self._emitting_light = Parameter(0.1*shs[:, 0, :])
         
     @property
     def colors(self):
@@ -199,6 +201,7 @@ class VanillaGaussians(nn.Module):
             self.class_prefix+"opacity": [self._opacities],
             self.class_prefix+"scaling": [self._scales],
             self.class_prefix+"rotation": [self._quats],
+            self.class_prefix+"_emitting_light": [self._emitting_light],
         }
     
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
@@ -238,6 +241,7 @@ class VanillaGaussians(nn.Module):
                     split_opacities,
                     split_scales,
                     split_quats,
+                    split_emitting_light,
                 ) = self.split_gaussians(splits, nsamps)
 
                 dups = (
@@ -252,6 +256,7 @@ class VanillaGaussians(nn.Module):
                     dup_opacities,
                     dup_scales,
                     dup_quats,
+                    dup_emitting_light,
                 ) = self.dup_gaussians(dups)
                 
                 self._means = Parameter(torch.cat([self._means.detach(), split_means, dup_means], dim=0))
@@ -261,6 +266,7 @@ class VanillaGaussians(nn.Module):
                 self._opacities = Parameter(torch.cat([self._opacities.detach(), split_opacities, dup_opacities], dim=0))
                 self._scales = Parameter(torch.cat([self._scales.detach(), split_scales, dup_scales], dim=0))
                 self._quats = Parameter(torch.cat([self._quats.detach(), split_quats, dup_quats], dim=0))
+                self._emitting_light = Parameter(torch.cat([self._emitting_light.detach(), split_emitting_light, dup_emitting_light], dim=0))
                 
                 # append zeros to the max_2Dsize tensor
                 self.max_2Dsize = torch.cat(
@@ -327,6 +333,7 @@ class VanillaGaussians(nn.Module):
         self._features_dc = Parameter(self._features_dc[~culls].detach())
         self._features_rest = Parameter(self._features_rest[~culls].detach())
         self._opacities = Parameter(self._opacities[~culls].detach())
+        self._emitting_light = Parameter(self._emitting_light[~culls].detach())
 
         print(f"     Cull: {n_bef - self.num_points}")
         return culls
@@ -351,6 +358,7 @@ class VanillaGaussians(nn.Module):
         # new_colors_all = self.colors_all[split_mask].repeat(samps, 1, 1)
         new_feature_dc = self._features_dc[split_mask].repeat(samps, 1)
         new_feature_rest = self._features_rest[split_mask].repeat(samps, 1, 1)
+        new_emitting_light = self._emitting_light[split_mask].repeat(samps, 1)
         # step 3, sample new opacities
         new_opacities = self._opacities[split_mask].repeat(samps, 1)
         # step 4, sample new scales
@@ -359,7 +367,7 @@ class VanillaGaussians(nn.Module):
         self._scales[split_mask] = torch.log(torch.exp(self._scales[split_mask]) / size_fac)
         # step 5, sample new quats
         new_quats = self._quats[split_mask].repeat(samps, 1)
-        return new_means, new_feature_dc, new_feature_rest, new_opacities, new_scales, new_quats
+        return new_means, new_feature_dc, new_feature_rest, new_opacities, new_scales, new_quats, new_emitting_light
 
     def dup_gaussians(self, dup_mask: torch.Tensor) -> Tuple:
         """
@@ -374,7 +382,8 @@ class VanillaGaussians(nn.Module):
         dup_opacities = self._opacities[dup_mask]
         dup_scales = self._scales[dup_mask]
         dup_quats = self._quats[dup_mask]
-        return dup_means, dup_feature_dc, dup_feature_rest, dup_opacities, dup_scales, dup_quats
+        dup_emitting_light = self._emitting_light[dup_mask]
+        return dup_means, dup_feature_dc, dup_feature_rest, dup_opacities, dup_scales, dup_quats, dup_emitting_light
 
     def get_gaussians(self, cam: dataclass_camera) -> Dict:
         filter_mask = torch.ones_like(self._means[:, 0], dtype=torch.bool)
@@ -390,7 +399,8 @@ class VanillaGaussians(nn.Module):
             rgbs = torch.clamp(rgbs + 0.5, 0.0, 1.0)
         else:
             rgbs = torch.sigmoid(colors[:, 0, :])
-            
+        rgbs = torch.cat([rgbs , self._emitting_light], dim=-1)
+        
         activated_opacities = self.get_opacity
         activated_scales = self.get_scaling
         activated_rotations = self.get_quats
@@ -460,6 +470,7 @@ class VanillaGaussians(nn.Module):
         self._features_dc = Parameter(torch.zeros((N,) + self._features_dc.shape[1:], device=self.device))
         self._features_rest = Parameter(torch.zeros((N,) + self._features_rest.shape[1:], device=self.device))
         self._opacities = Parameter(torch.zeros((N,) + self._opacities.shape[1:], device=self.device))
+        self._emitting_light = Parameter(torch.zeros((N,) + self._emitting_light.shape[1:], device=self.device))
         msg = super().load_state_dict(state_dict, **kwargs)
         return msg
     

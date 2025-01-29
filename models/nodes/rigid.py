@@ -97,6 +97,7 @@ class RigidNodes(VanillaGaussians):
         self._features_dc = Parameter(shs[:, 0, :])
         self._features_rest = Parameter(shs[:, 1:, :])
         self._opacities = Parameter(torch.logit(0.1 * torch.ones(self.num_points, 1, device=self.device)))
+        self._emitting_light = Parameter(0.1*shs[:, 0, :])
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = self.get_gaussian_param_groups()
@@ -156,6 +157,7 @@ class RigidNodes(VanillaGaussians):
                     split_scales,
                     split_quats,
                     split_ids,
+                    split_emitting_light,
                 ) = self.split_gaussians(splits, nsamps)
 
                 dups = (
@@ -171,6 +173,7 @@ class RigidNodes(VanillaGaussians):
                     dup_scales,
                     dup_quats,
                     dup_ids,
+                    dup_emitting_light,
                 ) = self.dup_gaussians(dups)
                 
                 self._means = Parameter(torch.cat([self._means.detach(), split_means, dup_means], dim=0))
@@ -181,7 +184,8 @@ class RigidNodes(VanillaGaussians):
                 self._scales = Parameter(torch.cat([self._scales.detach(), split_scales, dup_scales], dim=0))
                 self._quats = Parameter(torch.cat([self._quats.detach(), split_quats, dup_quats], dim=0))
                 self.point_ids = torch.cat([self.point_ids, split_ids, dup_ids], dim=0)
-                
+                self._emitting_light = Parameter(torch.cat([self._emitting_light.detach(), split_emitting_light, dup_emitting_light], dim=0))
+
                 # append zeros to the max_2Dsize tensor
                 self.max_2Dsize = torch.cat(
                     [self.max_2Dsize, torch.zeros_like(split_scales[:, 0]), torch.zeros_like(dup_scales[:, 0])],
@@ -249,6 +253,7 @@ class RigidNodes(VanillaGaussians):
         self._features_dc = Parameter(self._features_dc[~culls].detach())
         self._features_rest = Parameter(self._features_rest[~culls].detach())
         self._opacities = Parameter(self._opacities[~culls].detach())
+        self._emitting_light = Parameter(self._emitting_light[~culls].detach())
         self.point_ids = self.point_ids[~culls]
 
         print(f"     Cull: {n_bef - self.num_points}")
@@ -273,6 +278,7 @@ class RigidNodes(VanillaGaussians):
         # new_colors_all = self.colors_all[split_mask].repeat(samps, 1, 1)
         new_feature_dc = self._features_dc[split_mask].repeat(samps, 1)
         new_feature_rest = self._features_rest[split_mask].repeat(samps, 1, 1)
+        new_emitting_light = self._emitting_light[split_mask].repeat(samps, 1)
         # step 3, sample new opacities
         new_opacities = self._opacities[split_mask].repeat(samps, 1)
         # step 4, sample new scales
@@ -283,7 +289,7 @@ class RigidNodes(VanillaGaussians):
         new_quats = self._quats[split_mask].repeat(samps, 1)
         # step 6, sample new ids
         new_ids = self.point_ids[split_mask].repeat(samps, 1)
-        return new_means, new_feature_dc, new_feature_rest, new_opacities, new_scales, new_quats, new_ids
+        return new_means, new_feature_dc, new_feature_rest, new_opacities, new_scales, new_quats, new_ids, new_emitting_light
 
     def dup_gaussians(self, dup_mask: torch.Tensor) -> Tuple:
         """
@@ -299,7 +305,8 @@ class RigidNodes(VanillaGaussians):
         dup_scales = self._scales[dup_mask]
         dup_quats = self._quats[dup_mask]
         dup_ids = self.point_ids[dup_mask]
-        return dup_means, dup_feature_dc, dup_feature_rest, dup_opacities, dup_scales, dup_quats, dup_ids
+        dup_emitting_light = self._emitting_light[dup_mask]
+        return dup_means, dup_feature_dc, dup_feature_rest, dup_opacities, dup_scales, dup_quats, dup_ids, dup_emitting_light
 
     def get_out_of_bound_mask(self):
         """
@@ -393,7 +400,8 @@ class RigidNodes(VanillaGaussians):
             rgbs = torch.clamp(rgbs + 0.5, 0.0, 1.0)
         else:
             rgbs = torch.sigmoid(colors[:, 0, :])
-        
+        rgbs = torch.cat([rgbs , self._emitting_light], dim=-1)
+
         valid_mask = self.get_pts_valid_mask()
             
         activated_opacities = self.get_opacity * valid_mask.float().unsqueeze(-1)
@@ -438,6 +446,7 @@ class RigidNodes(VanillaGaussians):
             "sh_dcs": self._features_dc[pts_mask],
             "sh_rests": self._features_rest[pts_mask],
             "ids": self.point_ids[pts_mask],
+            "emitting_light": self._emitting_light[pts_mask]
         }
         return gaussian_dict
     
@@ -516,6 +525,7 @@ class RigidNodes(VanillaGaussians):
             self._features_dc = Parameter(self._features_dc[mask])
             self._features_rest = Parameter(self._features_rest[mask])
             self._opacities = Parameter(self._opacities[mask])
+            self._emitting_light = Parameter(self._emitting_light[mask])
             self.point_ids = self.point_ids[mask]
         
     def collect_gaussians_from_ids(self, ids: List[int]) -> Dict:
@@ -530,6 +540,7 @@ class RigidNodes(VanillaGaussians):
                     "_features_rest": self._features_rest[self.point_ids[..., 0] == id],
                     "_opacities": self._opacities[self.point_ids[..., 0] == id],
                     "point_ids": self.point_ids[self.point_ids[..., 0] == id],
+                    "_emitting_light": self._emitting_light[self.point_ids[..., 0] == id],
                 }
                 gaussian_dict[id] = instance_raw_dict
         return gaussian_dict
@@ -554,6 +565,7 @@ class RigidNodes(VanillaGaussians):
             self._features_dc = Parameter(torch.cat([self._features_dc, new_gaussian["_features_dc"]], dim=0))
             self._features_rest = Parameter(torch.cat([self._features_rest, new_gaussian["_features_rest"]], dim=0))
             self._opacities = Parameter(torch.cat([self._opacities, new_gaussian["_opacities"]], dim=0))
+            self._emitting_light = Parameter(torch.cat([self._emitting_light, new_gaussian["_emitting_light"]], dim=0))
             # keeps original point ids
             self.point_ids = torch.cat([self.point_ids, torch.full_like(new_gaussian["point_ids"], ins_id)], dim=0)
     

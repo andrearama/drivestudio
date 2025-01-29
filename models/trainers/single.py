@@ -181,6 +181,7 @@ class SingleTrainer(BasicTrainer):
         )
         
         # render sky
+        asd
         sky_model = self.models['Sky']
         outputs["rgb_sky"] = sky_model(image_infos)
         outputs["rgb_sky_blend"] = outputs["rgb_sky"] * (1.0 - outputs["opacity"])

@@ -223,7 +223,7 @@ def main(args):
                 ),  # don't save the video
                 layout=dataset.layout,
                 num_timestamps=1,
-                keys=render_keys,
+                keys=render_keys + ["custom_tensor","rgb_light_effect","rgb_light_mask"],
                 save_seperate_video=cfg.logging.save_seperate_video,
                 num_cams=dataset.pixel_source.num_cams,
                 fps=cfg.render.fps,
