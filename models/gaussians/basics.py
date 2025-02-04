@@ -116,6 +116,7 @@ class dataclass_camera:
     Ks: torch.Tensor
     H: int
     W: int
+    cam_displacement:torch.Tensor
 
 @dataclass
 class dataclass_gs:

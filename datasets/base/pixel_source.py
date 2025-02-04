@@ -622,12 +622,21 @@ class CameraData(object):
             dtype=torch.long,
         )
         c2w = self.cam_to_worlds[frame_idx]
+ 
+        if frame_idx == self.cam_to_worlds.shape[0] - 1:
+            c2w_next = self.cam_to_worlds[frame_idx]
+        else:     
+            c2w_next = self.cam_to_worlds[frame_idx + 1]
+        # calculate displacement between camera positions
+        cam_displ = c2w_next[:3, 3] - c2w[:3, 3] 
+
         intrinsics = self.intrinsics[frame_idx] * self.downscale_factor
         intrinsics[2, 2] = 1.0
         origins, viewdirs, direction_norm = get_rays(x, y, c2w, intrinsics)
         origins = origins.reshape(img_height, img_width, 3)
         viewdirs = viewdirs.reshape(img_height, img_width, 3)
         direction_norm = direction_norm.reshape(img_height, img_width, 1)
+
         _image_infos = {
             "origins": origins,
             "viewdirs": viewdirs,
@@ -653,6 +662,7 @@ class CameraData(object):
             "height": torch.tensor(img_height, dtype=torch.long, device=c2w.device),
             "width": torch.tensor(img_width, dtype=torch.long, device=c2w.device),
             "intrinsics": intrinsics,
+            "cam_displacement": cam_displ
         }
         return image_infos, cam_infos
 
@@ -1110,6 +1120,7 @@ class ScenePixelSource(abc.ABC):
                 "intrinsics": intrinsics,
                 "height": torch.tensor([H], dtype=torch.long, device=self.device),
                 "width": torch.tensor([W], dtype=torch.long, device=self.device),
+                "cam_displacement": torch.zeros(3)
             }
             
             image_infos = {

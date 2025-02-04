@@ -20,3 +20,4 @@ CUDA_VISIBLE_DEVICES=3 python tools/train.py \
     data.start_timestep=$start_timestep \
     data.end_timestep=$end_timestep \
     data.pixel_source.test_timesteps="$test_timesteps"\
+    trainer.render.avg_renderings="True"\
