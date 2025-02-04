@@ -69,12 +69,13 @@ class BasicTrainer(nn.Module):
         res_schedule: OmegaConf = None,
         gaussian_optim_general_cfg: OmegaConf = None,
         gaussian_ctrl_general_cfg: OmegaConf = None,
+        num_timesteps: int = 0,
         model_config: OmegaConf = None,
         num_train_images: int = 0,
         num_full_images: int = 0,
         test_set_indices: List[int] = None,
         scene_aabb: torch.Tensor = None,
-        device=None,
+        device=None
     ):
         super().__init__()
         self._type = type
@@ -82,6 +83,7 @@ class BasicTrainer(nn.Module):
         self.losses_dict = losses
         self.render_cfg = render
         self.res_schedule = res_schedule
+        self.num_timesteps = num_timesteps
         self.model_config = model_config
         self.num_iters = self.optim_general.get("num_iters", 30000)
         self.gaussian_optim_general_cfg = gaussian_optim_general_cfg
@@ -172,6 +174,7 @@ class BasicTrainer(nn.Module):
         raise NotImplementedError("Please implement the _init_models function")
     
     def initialize_optimizer(self) -> None:
+        
         # get param groups first
         self.param_groups = {}
         for class_name, model in self.models.items():
@@ -222,6 +225,15 @@ class BasicTrainer(nn.Module):
                 # adjust max_steps to account for opt_after
                 sched_cfg.max_steps = sched_cfg.max_steps - sched_cfg.opt_after
                 lr_schedulers[params_name] = lr_scheduler_fn(sched_cfg, lr_init)
+
+        self.avg_renderings_scale = torch.nn.Parameter(0.05*torch.ones(self.num_timesteps).to(self.device))
+        groups.append({
+            'params': [self.avg_renderings_scale],
+            'name': 'avg_renderings_scale',
+            'lr': 0.0001,
+            'eps': 1e-15,
+            'weight_decay': 0
+        })         
 
         self.optimizer = torch.optim.Adam(groups, lr=0.0, eps=1e-15)
         self.lr_schedulers = lr_schedulers
@@ -683,6 +695,7 @@ class BasicTrainer(nn.Module):
                 continue
             msg = model.load_state_dict(model_state_dict[class_name], strict=strict)
             logger.info(f"{class_name}: {msg}")
+        self.avg_renderings_scale = state_dict.pop("avg_renderings_scale", None)
         msg = super().load_state_dict(state_dict, strict)
         logger.info(f"BasicTrainer: {msg}")
         

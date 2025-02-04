@@ -234,6 +234,9 @@ def main(args):
                     wandb.log({"image_rendering/" + k: wandb.Image(v)})
             del render_results
             torch.cuda.empty_cache()
+
+        if step % cfg.logging.print_freq == 0:
+            print(trainer.avg_renderings_scale)
                 
         
         #----------------------------------------------------------------------------
@@ -343,6 +346,8 @@ def main(args):
         render_keys=render_keys,
         args=args,
     )
+
+    print(trainer.avg_renderings_scale)
     
     if args.enable_viewer:
         print("Viewer running... Ctrl+C to exit.")

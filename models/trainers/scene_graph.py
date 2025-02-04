@@ -14,10 +14,8 @@ logger = logging.getLogger()
 class MultiTrainer(BasicTrainer):
     def __init__(
         self,
-        num_timesteps: int,
         **kwargs
     ):
-        self.num_timesteps = num_timesteps
         super().__init__(**kwargs)
         self.render_each_class = True
         
@@ -235,21 +233,22 @@ class MultiTrainer(BasicTrainer):
             image_ids=image_infos["img_idx"].flatten()[0],
             novel_view=novel_view
         )
-    
-        if self.render_cfg.avg_renderings == True and isinstance(self.render_cfg.avg_renderings_scale, float):
+
+        frame_idx = image_infos["frame_idx"][0, 0].item()
+        if self.render_cfg.avg_renderings == True:
             left_cam = self.process_camera(
                 camera_infos=camera_infos,
                 image_ids=image_infos["img_idx"].flatten()[0],
                 novel_view=novel_view
             )
-            left_cam.camtoworlds[:3, 3] -= self.render_cfg.avg_renderings_scale * left_cam.cam_displacement
+            left_cam.camtoworlds[:3, 3] -= self.avg_renderings_scale[frame_idx] * left_cam.cam_displacement
 
             right_cam = self.process_camera(
                 camera_infos=camera_infos,
                 image_ids=image_infos["img_idx"].flatten()[0],
                 novel_view=novel_view
             )
-            right_cam.camtoworlds[:3, 3] += self.render_cfg.avg_renderings_scale * right_cam.cam_displacement
+            right_cam.camtoworlds[:3, 3] += self.avg_renderings_scale[frame_idx] * right_cam.cam_displacement
             
             outputs = []
 
@@ -268,7 +267,7 @@ class MultiTrainer(BasicTrainer):
         else:
             gs = self.collect_gaussians(cam=self.processed_cam, image_ids=image_infos["img_idx"].flatten()[0])
             final_output = self.render_outputs(image_infos, gs, self.processed_cam)
-
+        
         return final_output
 
     def render_outputs(
