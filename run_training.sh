@@ -4,10 +4,11 @@ end_timestep=-1 # end frame index, -1 for the last frame
 
 output_root="outputs/drivestudio/"
 project="drivestudio_night_scenes"
-expname="learnable_scale_initial_0_05_lr_0_00005"
+expname="test_split3"
 scene_idx=814
+test_timesteps="[163, 194]"
 
-CUDA_VISIBLE_DEVICES=5 python tools/train.py \
+CUDA_VISIBLE_DEVICES=3 python tools/train.py \
     --config_file configs/omnire_extended_cam.yaml \
     --output_root $output_root \
     --project $project \
@@ -18,6 +19,5 @@ CUDA_VISIBLE_DEVICES=5 python tools/train.py \
     data.scene_idx=$scene_idx \
     data.start_timestep=$start_timestep \
     data.end_timestep=$end_timestep \
+    data.pixel_source.test_timesteps="$test_timesteps"\
     trainer.render.avg_renderings="True"\
-    #trainer.render.avg_renderings_scale="0.15" \
-    #trainer.optim.num_iters=3\

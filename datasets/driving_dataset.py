@@ -582,6 +582,7 @@ class DrivingDataset(SceneDataset):
         return valid_mask
 
     def split_train_test(self):
+        test_timesteps = self.data_cfg.pixel_source.get("test_timesteps", None)
         if self.data_cfg.pixel_source.test_image_stride != 0:
             test_timesteps = np.arange(
                 # it makes no sense to have test timesteps before the start timestep
@@ -589,6 +590,8 @@ class DrivingDataset(SceneDataset):
                 self.num_img_timesteps,
                 self.data_cfg.pixel_source.test_image_stride,
             )
+        elif test_timesteps is not None: 
+            test_timesteps = self.data_cfg.pixel_source.test_timesteps
         else:
             test_timesteps = []
         train_timesteps = np.array(
