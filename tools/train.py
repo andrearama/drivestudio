@@ -189,23 +189,34 @@ def main(args):
         #----------------------------     Validate     ------------------------------
         if step % cfg.logging.vis_freq == 0 and cfg.logging.vis_freq > 0:
             logger.info("Visualizing...")
-            vis_timestep = np.linspace(
-                0,
-                dataset.num_img_timesteps,
-                trainer.num_iters // cfg.logging.vis_freq + 1,
-                endpoint=False,
-                dtype=int,
-            )[step // cfg.logging.vis_freq]
+            test_timesteps = cfg.data.pixel_source.get("test_timesteps", None)
+            if test_timesteps is None:
+                #select timestep from training dataset for validation
+                vis_timestep = np.linspace(
+                    0,
+                    dataset.num_img_timesteps,
+                    trainer.num_iters // cfg.logging.vis_freq + 1,
+                    endpoint=False,
+                    dtype=int,
+                )[step // cfg.logging.vis_freq]
+                vis_indices=[vis_timestep * dataset.pixel_source.num_cams + i 
+                        for i in range(dataset.pixel_source.num_cams)
+                    ]
+                num_timestamps = 1
+                image_set = dataset.full_image_set
+            else: 
+                # select all test indices for validation
+                vis_indices = None
+                num_timestamps = int(len(dataset.test_image_set)/dataset.pixel_source.num_cams)
+                image_set = dataset.test_image_set
+
             with torch.no_grad():
                 render_results = render_images(
                     trainer=trainer,
-                    dataset=dataset.full_image_set,
+                    dataset=image_set,
                     compute_metrics=True,
                     compute_error_map=cfg.render.vis_error,
-                    vis_indices=[
-                        vis_timestep * dataset.pixel_source.num_cams + i
-                        for i in range(dataset.pixel_source.num_cams)
-                    ],
+                    vis_indices = vis_indices,
                 )
             if args.enable_wandb:
                 wandb.log(
@@ -222,7 +233,7 @@ def main(args):
                     cfg.log_dir, "images", f"step_{step}.png"
                 ),  # don't save the video
                 layout=dataset.layout,
-                num_timestamps=1,
+                num_timestamps=num_timestamps,
                 keys=render_keys,
                 save_seperate_video=cfg.logging.save_seperate_video,
                 num_cams=dataset.pixel_source.num_cams,

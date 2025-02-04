@@ -546,14 +546,15 @@ def save_seperate_videos(
     for key in keys:
         tmp_save_pth = save_pth.replace(".mp4", f"_{key}.mp4")
         tmp_save_pth = tmp_save_pth.replace(".png", f"_{key}.png")
-        if num_timestamps == 1:  # it's an image
-            writer = imageio.get_writer(tmp_save_pth, mode="I")
-        else:
+        if ".mp4" in save_pth:  
             writer = imageio.get_writer(tmp_save_pth, mode="I", fps=fps)
         if "mask" not in key:
             if key not in render_results or len(render_results[key]) == 0:
                 continue
         for i in range(num_timestamps):
+            if ".png" in tmp_save_pth:  # it's an image
+                tmp_save_pth_img = tmp_save_pth.replace(".png",f"_{i}.png")
+                writer = imageio.get_writer(tmp_save_pth_img, mode="I")
             cam_names = render_results["cam_names"][i * num_cams : (i + 1) * num_cams]
             # skip if the key is not in render_results
             if "mask" in key:
