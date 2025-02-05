@@ -17,14 +17,14 @@ from gsplat.cuda._wrapper import spherical_harmonics
 def interpolate_quats(q1, q2, fraction=0.5):
     q1 = q1 / torch.norm(q1, dim=-1, keepdim=True)
     q2 = q2 / torch.norm(q2, dim=-1, keepdim=True)
-    
+
     dot = (q1 * q2).sum(dim=-1)
     dot = torch.clamp(dot, -1, 1)
     
     neg_mask = dot < 0
     q2[neg_mask] = -q2[neg_mask]
     dot[neg_mask] = -dot[neg_mask]
-    
+
     similar_mask = dot > 0.9995
     q_interp_similar = q1 + fraction * (q2 - q1)
 
@@ -34,8 +34,8 @@ def interpolate_quats(q1, q2, fraction=0.5):
     sin_theta = torch.sin(theta)
     sin_theta_0 = torch.sin(theta_0)
     
-    s1 = torch.cos(theta) - dot * sin_theta / sin_theta_0
-    s2 = sin_theta / sin_theta_0
+    s1 = torch.cos(theta) - dot * sin_theta / (sin_theta_0 +1e-5)
+    s2 = sin_theta / (sin_theta_0 + +1e-5)
     
     q_interp = (s1[..., None] * q1) + (s2[..., None] * q2)
     
@@ -117,6 +117,7 @@ class dataclass_camera:
     H: int
     W: int
     cam_displacement:torch.Tensor
+    rotation_q1q2q3: torch.Tensor
 
 @dataclass
 class dataclass_gs:

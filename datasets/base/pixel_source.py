@@ -10,6 +10,7 @@ from tqdm import tqdm
 from PIL import Image
 
 import torch
+from pytorch3d.transforms import matrix_to_quaternion
 from torch import Tensor
 from datasets.dataset_meta import DATASETS_CONFIG
 
@@ -627,8 +628,20 @@ class CameraData(object):
             c2w_next = self.cam_to_worlds[frame_idx]
         else:     
             c2w_next = self.cam_to_worlds[frame_idx + 1]
+        if frame_idx == 0:
+            c2w_prev = self.cam_to_worlds[frame_idx]
+        else: 
+            c2w_prev = self.cam_to_worlds[frame_idx - 1]
+
         # calculate displacement between camera positions
-        cam_displ = c2w_next[:3, 3] - c2w[:3, 3] 
+        cam_displ_right = c2w_next[:3, 3] - c2w[:3, 3] 
+        cam_displ_left = c2w_prev[:3, 3] - c2w[:3, 3] 
+        cam_displ = torch.stack([cam_displ_left, cam_displ_right], dim=0)
+
+        q1 = matrix_to_quaternion(c2w_prev[:3, :3])
+        q2 = matrix_to_quaternion(c2w[:3, :3])
+        q3 = matrix_to_quaternion(c2w_next[:3, :3])
+        q1q2q3 = torch.stack([q1, q2, q3], dim=0)
 
         intrinsics = self.intrinsics[frame_idx] * self.downscale_factor
         intrinsics[2, 2] = 1.0
@@ -662,7 +675,8 @@ class CameraData(object):
             "height": torch.tensor(img_height, dtype=torch.long, device=c2w.device),
             "width": torch.tensor(img_width, dtype=torch.long, device=c2w.device),
             "intrinsics": intrinsics,
-            "cam_displacement": cam_displ
+            "cam_displacement": cam_displ,
+            "rotation_q1q2q3": q1q2q3
         }
         return image_infos, cam_infos
 
@@ -1105,6 +1119,13 @@ class ScenePixelSource(abc.ABC):
         render_data = []
         for i in range(len(traj)):
             c2w = traj[i]
+
+            c2w = self.cam_to_worlds[frame_idx]
+ 
+            q1 = torch.tensor([1.0, 0.0, 0.0, 0.0])
+            q2 = matrix_to_quaternion(c2w[:3, :3])
+            q3 = torch.tensor([1.0, 0.0, 0.0, 0.0])
+            q1q2q3 = torch.stack([q1, q2, q3], dim=0)
             
             # Generate ray origins and directions
             x, y = torch.meshgrid(torch.arange(W), torch.arange(H), indexing='xy')
@@ -1120,7 +1141,9 @@ class ScenePixelSource(abc.ABC):
                 "intrinsics": intrinsics,
                 "height": torch.tensor([H], dtype=torch.long, device=self.device),
                 "width": torch.tensor([W], dtype=torch.long, device=self.device),
-                "cam_displacement": torch.zeros(3)
+                "cam_displacement": torch.zeros(2, 3),
+                "rotation_q1q2q3": q1q2q3 
+
             }
             
             image_infos = {
@@ -1137,7 +1160,7 @@ class ScenePixelSource(abc.ABC):
             
             render_data.append({
                 "cam_infos": cam_infos,
-                "image_infos": image_infos,
+                "image_infos": image_infos
             })
         
         return render_data

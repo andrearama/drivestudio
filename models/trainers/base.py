@@ -347,7 +347,8 @@ class BasicTrainer(nn.Module):
             Ks=camera_infos["intrinsics"],
             H=camera_infos["height"],
             W=camera_infos["width"],
-            cam_displacement= camera_infos['cam_displacement']
+            cam_displacement= camera_infos['cam_displacement'],
+            rotation_q1q2q3= camera_infos["rotation_q1q2q3"]
         )
         
         return camera_dict

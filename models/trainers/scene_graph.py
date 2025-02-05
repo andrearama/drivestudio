@@ -6,7 +6,8 @@ from datasets.driving_dataset import DrivingDataset
 from models.trainers.base import BasicTrainer, GSModelType
 from utils.misc import import_str
 from utils.geometry import uniform_sample_sphere
-from models.gaussians.basics import dataclass_gs, dataclass_camera
+from models.gaussians.basics import dataclass_gs, dataclass_camera, interpolate_quats
+from pytorch3d.transforms import quaternion_to_matrix
 
 
 logger = logging.getLogger()
@@ -233,7 +234,7 @@ class MultiTrainer(BasicTrainer):
             image_ids=image_infos["img_idx"].flatten()[0],
             novel_view=novel_view
         )
-
+        
         frame_idx = image_infos["frame_idx"][0, 0].item()
         if self.render_cfg.avg_renderings == True:
             left_cam = self.process_camera(
@@ -241,14 +242,16 @@ class MultiTrainer(BasicTrainer):
                 image_ids=image_infos["img_idx"].flatten()[0],
                 novel_view=novel_view
             )
-            left_cam.camtoworlds[:3, 3] -= self.avg_renderings_scale[frame_idx] * left_cam.cam_displacement
+            left_cam.camtoworlds[:3, 3] += self.avg_renderings_scale[frame_idx] * left_cam.cam_displacement[0]
+            left_cam.camtoworlds[:3, :3] = quaternion_to_matrix(interpolate_quats(left_cam.rotation_q1q2q3[0], left_cam.rotation_q1q2q3[1], (1 - self.avg_renderings_scale[frame_idx])))
 
             right_cam = self.process_camera(
                 camera_infos=camera_infos,
                 image_ids=image_infos["img_idx"].flatten()[0],
                 novel_view=novel_view
             )
-            right_cam.camtoworlds[:3, 3] += self.avg_renderings_scale[frame_idx] * right_cam.cam_displacement
+            right_cam.camtoworlds[:3, 3] += self.avg_renderings_scale[frame_idx] * right_cam.cam_displacement[1]
+            right_cam.camtoworlds[:3, :3] = quaternion_to_matrix(interpolate_quats(right_cam.rotation_q1q2q3[1], right_cam.rotation_q1q2q3[2] , self.avg_renderings_scale[frame_idx]))
             
             outputs = []
 
