@@ -1122,9 +1122,9 @@ class ScenePixelSource(abc.ABC):
 
             c2w = self.cam_to_worlds[frame_idx]
  
-            q1 = torch.tensor([1.0, 0.0, 0.0, 0.0])
+            q1 = matrix_to_quaternion(c2w[:3, :3])
             q2 = matrix_to_quaternion(c2w[:3, :3])
-            q3 = torch.tensor([1.0, 0.0, 0.0, 0.0])
+            q3 = matrix_to_quaternion(c2w[:3, :3])
             q1q2q3 = torch.stack([q1, q2, q3], dim=0)
             
             # Generate ray origins and directions
