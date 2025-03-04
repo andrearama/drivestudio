@@ -4,20 +4,25 @@ end_timestep=-1 # end frame index, -1 for the last frame
 
 output_root="outputs/drivestudio/"
 project="drivestudio_night_scenes"
-expname="test_split3"
+expname="vehicle_interpolation"
 scene_idx=814
-test_timesteps="[163, 194]"
+steps=$(seq 0 5 190)
 
-CUDA_VISIBLE_DEVICES=3 python tools/train.py \
+test_timesteps="[$(echo $steps | tr ' ' ',')]"
+
+CUDA_VISIBLE_DEVICES=1 python tools/train.py \
     --config_file configs/omnire_extended_cam.yaml \
     --output_root $output_root \
     --project $project \
     --run_name $expname \
-    dataset=nuscenes/6cams \
+    --vsdebug \
+    dataset=nuscenes/1cams \
     data.data_root="data/nuscenes/processed_10Hz/trainval" \
     data.pixel_source.load_smpl="false" \
     data.scene_idx=$scene_idx \
     data.start_timestep=$start_timestep \
     data.end_timestep=$end_timestep \
-    data.pixel_source.test_timesteps="$test_timesteps"\
     trainer.render.avg_renderings="True"\
+    logging.vis_freq=10000\
+    data.pixel_source.test_timesteps="$test_timesteps"\
+    #trainer.optim.num_iters=10000\

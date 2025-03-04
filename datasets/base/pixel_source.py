@@ -196,13 +196,13 @@ class CameraData(object):
         dynamic_mask_filepaths, sky_mask_filepaths = [], []
         human_mask_filepaths, vehicle_mask_filepaths = [], []
         
-        fine_mask_path = os.path.join(self.data_path, "fine_dynamic_masks")
-        if os.path.exists(fine_mask_path):
-            dynamic_mask_dir = "fine_dynamic_masks"
-            logger.info("Using fine dynamic masks")
-        else:
-            dynamic_mask_dir = "dynamic_masks"
-            logger.info("Using coarse dynamic masks")
+        #fine_mask_path = os.path.join(self.data_path, "fine_dynamic_masks")
+        #if os.path.exists(fine_mask_path):
+            #dynamic_mask_dir = "fine_dynamic_masks"
+            #logger.info("Using fine dynamic masks")
+        #else:
+        dynamic_mask_dir = "dynamic_masks"
+        logger.info("Using coarse dynamic masks")
 
         # Note: we assume all the files in waymo dataset are synchronized
         for t in range(self.start_timestep, self.end_timestep):
@@ -386,7 +386,8 @@ class CameraData(object):
         normalized_time: Tensor,
     ):
         self.normalized_time = normalized_time.to(self.device)
-        
+
+    
     def build_image_error_buffer(self) -> None:
         """
         Build the image error buffer.
@@ -474,6 +475,7 @@ class CameraData(object):
             self.lidar_depth_maps = self.lidar_depth_maps.to(device)
         if self.image_error_maps is not None:
             self.image_error_maps = self.image_error_maps.to(device)
+
     
     def get_image(self, frame_idx: int) -> Dict[str, Tensor]:
         """
@@ -580,8 +582,10 @@ class CameraData(object):
                 )
             
         lidar_depth_map = None
+        
         if self.lidar_depth_maps is not None:
             lidar_depth_map = self.lidar_depth_maps[frame_idx]
+
             if self.downscale_factor != 1.0:
                 # BUG: cannot use, need futher investigation
                 # if self.data_cfg.denser_lidar_times > 1:
@@ -600,6 +604,7 @@ class CameraData(object):
                 #     )
                 # else:
                 lidar_depth_map = sparse_lidar_map_downsampler(lidar_depth_map, self.downscale_factor)
+
 
         if self.normalized_time is not None:
             normalized_time = torch.full(
@@ -634,9 +639,9 @@ class CameraData(object):
             c2w_prev = self.cam_to_worlds[frame_idx - 1]
 
         # calculate displacement between camera positions
-        cam_displ_right = c2w_next[:3, 3] - c2w[:3, 3] 
-        cam_displ_left = c2w_prev[:3, 3] - c2w[:3, 3] 
-        cam_displ = torch.stack([cam_displ_left, cam_displ_right], dim=0)
+        cam_displ_next = c2w_next[:3, 3] - c2w[:3, 3] 
+        cam_displ_prev = c2w_prev[:3, 3] - c2w[:3, 3] 
+        cam_displ = torch.stack([cam_displ_prev, cam_displ_next], dim=0)
 
         q1 = matrix_to_quaternion(c2w_prev[:3, :3])
         q2 = matrix_to_quaternion(c2w[:3, :3])
@@ -667,7 +672,7 @@ class CameraData(object):
             "lidar_depth_map": lidar_depth_map,
         }
         image_infos = {k: v for k, v in _image_infos.items() if v is not None}
-        
+
         cam_infos = {
             "cam_id": camera_id,
             "cam_name": self.cam_name,
@@ -1119,8 +1124,6 @@ class ScenePixelSource(abc.ABC):
         render_data = []
         for i in range(len(traj)):
             c2w = traj[i]
-
-            c2w = self.cam_to_worlds[frame_idx]
  
             q1 = matrix_to_quaternion(c2w[:3, :3])
             q2 = matrix_to_quaternion(c2w[:3, :3])

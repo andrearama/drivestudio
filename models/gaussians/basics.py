@@ -14,16 +14,16 @@ from gsplat.cuda_legacy._wrapper import num_sh_bases
 from gsplat.cuda_legacy._torch_impl import quat_to_rotmat
 from gsplat.cuda._wrapper import spherical_harmonics
 
-def interpolate_quats(q1, q2, fraction=0.5):
-    q1 = q1 / torch.norm(q1, dim=-1, keepdim=True)
-    q2 = q2 / torch.norm(q2, dim=-1, keepdim=True)
+def interpolate_quats(q1o, q2o, fraction=0.5):
+    q1 = q1o / (torch.norm(q1o, dim=-1, keepdim=True) + 1e-7)
+    q2 = q2o / (torch.norm(q2o, dim=-1, keepdim=True) + 1e-7)
 
     dot = (q1 * q2).sum(dim=-1)
     dot = torch.clamp(dot, -1, 1)
     
     neg_mask = dot < 0
-    q2[neg_mask] = -q2[neg_mask]
-    dot[neg_mask] = -dot[neg_mask]
+    q2 = torch.where(neg_mask[..., None], -q2, q2)
+    dot = torch.where(neg_mask, -dot, dot)
 
     similar_mask = dot > 0.9995
     q_interp_similar = q1 + fraction * (q2 - q1)
@@ -38,10 +38,8 @@ def interpolate_quats(q1, q2, fraction=0.5):
     s2 = sin_theta / (sin_theta_0 + +1e-5)
     
     q_interp = (s1[..., None] * q1) + (s2[..., None] * q2)
-    
-    final_q_interp = torch.zeros_like(q1)
-    final_q_interp[similar_mask] = q_interp_similar[similar_mask]
-    final_q_interp[~similar_mask] = q_interp[~similar_mask]
+
+    final_q_interp = torch.where(similar_mask[..., None], q_interp_similar, q_interp)
     return final_q_interp
 
 def random_quat_tensor(N):

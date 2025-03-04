@@ -226,14 +226,24 @@ class BasicTrainer(nn.Module):
                 sched_cfg.max_steps = sched_cfg.max_steps - sched_cfg.opt_after
                 lr_schedulers[params_name] = lr_scheduler_fn(sched_cfg, lr_init)
 
-        self.avg_renderings_scale = torch.nn.Parameter(0.05*torch.ones(self.num_timesteps).to(self.device))
+        self.avg_renderings_scale_front = torch.nn.Parameter(0.05*torch.ones(self.num_timesteps).to(self.device))
         groups.append({
-            'params': [self.avg_renderings_scale],
-            'name': 'avg_renderings_scale',
+            'params': [self.avg_renderings_scale_front],
+            'name': 'avg_renderings_scale_front',
             'lr': 0.0001,
             'eps': 1e-15,
             'weight_decay': 0
-        })         
+        })     
+
+        self.avg_renderings_scale_back = torch.nn.Parameter(0.05*torch.ones(self.num_timesteps).to(self.device))
+        groups.append({
+            'params': [self.avg_renderings_scale_back],
+            'name': 'avg_renderings_scale_back',
+            'lr': 0.0001,
+            'eps': 1e-15,
+            'weight_decay': 0
+        })    
+            
 
         self.optimizer = torch.optim.Adam(groups, lr=0.0, eps=1e-15)
         self.lr_schedulers = lr_schedulers
@@ -356,7 +366,9 @@ class BasicTrainer(nn.Module):
     def collect_gaussians(
         self,
         cam: dataclass_camera,
-        image_ids: torch.Tensor # leave it here for future use
+        image_ids: torch.Tensor, # leave it here for future use
+        avg_scale: torch.Tensor = 0.0,
+        direction: str = "none"
     ) -> dataclass_gs:
         gs_dict = {
             "_means": [],
@@ -367,7 +379,10 @@ class BasicTrainer(nn.Module):
             "class_labels": [],
         }
         for class_name in self.gaussian_classes.keys():
-            gs = self.models[class_name].get_gaussians(cam)
+            if class_name is "RigidNodes":
+                gs = self.models[class_name].get_gaussians(cam,  avg_scale, direction)
+            else:
+                gs = self.models[class_name].get_gaussians(cam)
             if gs is None:
                 continue
     
@@ -420,6 +435,7 @@ class BasicTrainer(nn.Module):
                 rasterize_mode="antialiased" if self.render_cfg.antialiased else "classic",
                 **kwargs,
             )
+
             renders = renders[0]
             alphas = alphas[0].squeeze(-1)
             assert self.render_cfg.batch_size == 1, "batch size must be 1, will support batch size > 1 in the future"
@@ -696,7 +712,8 @@ class BasicTrainer(nn.Module):
                 continue
             msg = model.load_state_dict(model_state_dict[class_name], strict=strict)
             logger.info(f"{class_name}: {msg}")
-        self.avg_renderings_scale = state_dict.pop("avg_renderings_scale", None)
+        self.avg_renderings_scale_front = state_dict.pop("avg_renderings_scale_front", None)
+        self.avg_renderings_scale_back = state_dict.pop("avg_renderings_scale_back", None)
         msg = super().load_state_dict(state_dict, strict)
         logger.info(f"BasicTrainer: {msg}")
         

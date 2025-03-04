@@ -36,6 +36,7 @@ def do_evaluation(
     logger.info("Evaluating Pixels...")
     if dataset.test_image_set is not None and cfg.render.render_test:
         logger.info("Evaluating Test Set Pixels...")
+
         render_results = render_images(
             trainer=trainer,
             dataset=dataset.test_image_set,
@@ -90,7 +91,7 @@ def do_evaluation(
                 wandb.log({"image_rendering/test/" + k: wandb.Image(v)})
         del render_results, vis_frame_dict
         torch.cuda.empty_cache()
-        
+    
     if cfg.render.render_full:
         logger.info("Evaluating Full Set...")
         render_results = render_images(
@@ -259,6 +260,18 @@ if __name__ == "__main__":
         
     # misc
     parser.add_argument("opts", help="Modify config options using the command-line", default=None, nargs=argparse.REMAINDER)
+    parser.add_argument("--vsdebug", action="store_true", help="enable vsdebug")
     
     args = parser.parse_args()
+    if args.vsdebug:
+
+        import debugpy
+
+        debugpy.listen(("0.0.0.0", 5678))
+
+        print("Waiting for debugger attach")
+
+        debugpy.wait_for_client()
+
+        print('Attached, continue...')
     main(args)

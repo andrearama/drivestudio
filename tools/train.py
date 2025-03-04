@@ -247,9 +247,10 @@ def main(args):
             torch.cuda.empty_cache()
 
         if step % cfg.logging.print_freq == 0:
-            print(trainer.avg_renderings_scale)
-                
+            print("scale back: ", trainer.avg_renderings_scale_back)
+            print("scale front: ", trainer.avg_renderings_scale_front)
         
+    
         #----------------------------------------------------------------------------
         #----------------------------  training step  -------------------------------
         # prepare for training
@@ -260,6 +261,7 @@ def main(args):
         # get data
         train_step_camera_downscale = trainer._get_downscale_factor()
         image_infos, cam_infos = dataset.train_image_set.next(train_step_camera_downscale)
+
         for k, v in image_infos.items():
             if isinstance(v, torch.Tensor):
                 image_infos[k] = v.cuda(non_blocking=True)
@@ -358,7 +360,8 @@ def main(args):
         args=args,
     )
 
-    print(trainer.avg_renderings_scale)
+    print("scale back: ", trainer.avg_renderings_scale_back)
+    print("scale front: ", trainer.avg_renderings_scale_front)
     
     if args.enable_viewer:
         print("Viewer running... Ctrl+C to exit.")
@@ -387,6 +390,19 @@ if __name__ == "__main__":
     
     # misc
     parser.add_argument("opts", help="Modify config options using the command-line", default=None, nargs=argparse.REMAINDER)
-    
+    parser.add_argument("--vsdebug", action="store_true", help="enable vsdebug")
+
     args = parser.parse_args()
+    if args.vsdebug:
+
+        import debugpy
+
+        debugpy.listen(("0.0.0.0", 5677))
+
+        print("Waiting for debugger attach")
+
+        debugpy.wait_for_client()
+
+        print('Attached, continue...')
+ 
     final_step = main(args)

@@ -1,6 +1,7 @@
 from typing import Dict
 import torch
 import logging
+import imageio
 
 from datasets.driving_dataset import DrivingDataset
 from models.trainers.base import BasicTrainer, GSModelType
@@ -235,42 +236,48 @@ class MultiTrainer(BasicTrainer):
             novel_view=novel_view
         )
         
-        frame_idx = image_infos["frame_idx"][0, 0].item()
+        self.frame_idx = image_infos["frame_idx"][0, 0].item()
+        
         if self.render_cfg.avg_renderings == True:
-            left_cam = self.process_camera(
+            gs = []
+            #prev camera
+            prev_cam = self.process_camera(
                 camera_infos=camera_infos,
                 image_ids=image_infos["img_idx"].flatten()[0],
                 novel_view=novel_view
             )
-            left_cam.camtoworlds[:3, 3] += self.avg_renderings_scale[frame_idx] * left_cam.cam_displacement[0]
-            left_cam.camtoworlds[:3, :3] = quaternion_to_matrix(interpolate_quats(left_cam.rotation_q1q2q3[0], left_cam.rotation_q1q2q3[1], (1 - self.avg_renderings_scale[frame_idx])))
+            prev_cam.camtoworlds[:3, 3] += self.avg_renderings_scale_back[self.frame_idx] * prev_cam.cam_displacement[0]
+            prev_cam.camtoworlds[:3, :3] = quaternion_to_matrix(interpolate_quats(prev_cam.rotation_q1q2q3[0], prev_cam.rotation_q1q2q3[1], (1 - self.avg_renderings_scale_back[self.frame_idx])))
+            gs.append(self.collect_gaussians(cam=prev_cam, image_ids=image_infos["img_idx"].flatten()[0], avg_scale = self.avg_renderings_scale_back[self.frame_idx], direction = "prev"))
 
-            right_cam = self.process_camera(
+            #centered camera
+            gs.append (self.collect_gaussians(cam=self.processed_cam, image_ids=image_infos["img_idx"].flatten()[0], avg_scale = 0.0, direction = "none"))
+
+            #next camera
+            next_cam = self.process_camera(
                 camera_infos=camera_infos,
                 image_ids=image_infos["img_idx"].flatten()[0],
                 novel_view=novel_view
             )
-            right_cam.camtoworlds[:3, 3] += self.avg_renderings_scale[frame_idx] * right_cam.cam_displacement[1]
-            right_cam.camtoworlds[:3, :3] = quaternion_to_matrix(interpolate_quats(right_cam.rotation_q1q2q3[1], right_cam.rotation_q1q2q3[2] , self.avg_renderings_scale[frame_idx]))
+            next_cam.camtoworlds[:3, 3] += self.avg_renderings_scale_front[self.frame_idx] * next_cam.cam_displacement[1]
+            next_cam.camtoworlds[:3, :3] = quaternion_to_matrix(interpolate_quats(next_cam.rotation_q1q2q3[1], next_cam.rotation_q1q2q3[2] , self.avg_renderings_scale_front[self.frame_idx]))
+            gs.append(self.collect_gaussians(cam=next_cam, image_ids=image_infos["img_idx"].flatten()[0], avg_scale = self.avg_renderings_scale_front[self.frame_idx], direction = "next"))
+            
             
             outputs = []
 
-            for idx, pc_displaced in enumerate([left_cam, self.processed_cam, right_cam]):
-                gs_displaced = self.collect_gaussians(
-                    cam=pc_displaced,
-                    image_ids=image_infos["img_idx"].flatten()[0]
-                )
-                outputs.append(self.render_outputs(image_infos, gs_displaced, pc_displaced))
+            for idx, pc_displaced in enumerate([prev_cam, self.processed_cam, next_cam]):
+                outputs.append(self.render_outputs(image_infos, gs[idx], pc_displaced))
 
             final_output = {}
             for output_key in outputs[0].keys():
                 stacked_tensors = torch.stack([output[output_key] for output in outputs])
                 final_output[output_key] = stacked_tensors.mean(dim=0)
-
-        else:
-            gs = self.collect_gaussians(cam=self.processed_cam, image_ids=image_infos["img_idx"].flatten()[0])
-            final_output = self.render_outputs(image_infos, gs, self.processed_cam)
         
+        else:
+            gs = self.collect_gaussians(cam=self.processed_cam, image_ids=image_infos["img_idx"].flatten()[0], avg_scale = 0.0, direction = "none")
+            final_output = self.render_outputs(image_infos, gs, self.processed_cam)
+                
         return final_output
 
     def render_outputs(
@@ -303,6 +310,7 @@ class MultiTrainer(BasicTrainer):
             with torch.no_grad():
                 for class_name in self.gaussian_classes.keys():
                     gaussian_mask = self.pts_labels == self.gaussian_classes[class_name]
+                   
                     sep_rgb, sep_depth, sep_opacity = render_fn(gaussian_mask)
                     outputs[class_name+"_rgb"] = self.affine_transformation(sep_rgb, image_infos)
                     outputs[class_name+"_opacity"] = sep_opacity

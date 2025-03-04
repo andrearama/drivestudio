@@ -64,6 +64,7 @@ class RigidNodes(VanillaGaussians):
             instances_size.append(v["size"])
             instances_fv.append(v["frame_info"].unsqueeze(1))
             point_ids.append(torch.full((v["num_pts"], 1), id_in_model, dtype=torch.long))
+   
         init_means = torch.cat(init_means, dim=0).to(self.device) # (N, 3)
         init_colors = torch.cat(init_colors, dim=0).to(self.device) # (N, 3)
         instances_pose = torch.cat(instances_pose, dim=1).to(self.device) # (num_frame, num_instances, 4, 4)
@@ -114,6 +115,7 @@ class RigidNodes(VanillaGaussians):
         
         poses = instances_pose[..., :3, :3].view(-1, 3, 3)
         valid_mask = self.instances_fv.view(-1)
+
         _quats = matrix_to_quaternion(poses[valid_mask])
         _quats = self.quat_act(_quats)
         
@@ -312,56 +314,65 @@ class RigidNodes(VanillaGaussians):
         mask = (instance_pts.abs() > per_pts_size / 2).any(dim=-1)
         return mask
 
-    def transform_means(self, means: torch.Tensor) -> torch.Tensor:
+    def check_inv_nans(self, v, name):
+        if torch.isnan(v).any():
+            #raise ValueError(f"NaN detected in {name} at step {self.step}")
+            print(name)
+            pass
+        if torch.isinf(v).any():
+            #raise ValueError(f"Inf detected in name {name} at step {self.step}")
+            print(name)
+
+
+    def transform_means(self, means: torch.Tensor, avg_scale=0.0, direction="none") -> torch.Tensor:
         """
-        transform the means of instances to world space
-        according to the pose at the current frame
+        Transform the means of instances to world space
+        according to the pose at the current frame.
         """
         assert means.shape[0] == self.point_ids.shape[0], \
             "its a bug here, we need to pass the mask for points_ids"
-        if self.in_test_set and (
-            self.cur_frame - 1 > 0 and self.cur_frame + 1 < self.num_frames
-        ):
-            # use the previous and next frame to interpolate the pose
-            _quats_prev_frame = self.instances_quats[self.cur_frame - 1]
-            _quats_next_frame = self.instances_quats[self.cur_frame + 1]
-            _quats_cur_frame = self.instances_quats[self.cur_frame]
-            interpolated_quats = interpolate_quats(_quats_prev_frame, _quats_next_frame)
-            
-            inter_valid_mask = self.instances_fv[self.cur_frame - 1] & self.instances_fv[self.cur_frame + 1]
-            quats_cur_frame = torch.where(
-                inter_valid_mask[:, None], interpolated_quats, _quats_cur_frame
-            )
-        else:
-            quats_cur_frame = self.instances_quats[self.cur_frame] # (num_instances, 4)
-        rot_cur_frame = quat_to_rotmat(
-            self.quat_act(quats_cur_frame)
-        )                                                          # (num_instances, 3, 3)
-        rot_per_pts = rot_cur_frame[self.point_ids[..., 0]]        # (num_points, 3, 3)
+    
+        cur_frame = self.cur_frame  
+
+        quats_cur_frame = self.instances_quats[cur_frame]
+        trans_cur_frame = self.instances_trans[cur_frame]
         
-        if self.in_test_set and (
+        ###deleteme:
+        test_list = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150, 155, 160, 165, 170, 175, 180, 185, 190]
+        if cur_frame in test_list:
+            quats_cur_frame = quats_cur_frame.detach()
+            trans_cur_frame = trans_cur_frame.detach()
+        #######
+
+        if direction in ["prev", "next"] and (
             self.cur_frame - 1 > 0 and self.cur_frame + 1 < self.num_frames
         ):
-            _prev_ins_trans = self.instances_trans[self.cur_frame - 1]
-            _next_ins_trans = self.instances_trans[self.cur_frame + 1]
-            _cur_ins_trans = self.instances_trans[self.cur_frame]
-            interpolated_trans = (_prev_ins_trans + _next_ins_trans) * 0.5
+            prev_next_offset = -1 if direction == "prev" else 1
+            quats_other_frame = self.instances_quats[cur_frame + prev_next_offset]
+            trans_other_frame = self.instances_trans[cur_frame + prev_next_offset]
             
-            inter_valid_mask = self.instances_fv[self.cur_frame - 1] & self.instances_fv[self.cur_frame + 1]
-            trans_cur_frame = torch.where(
-                inter_valid_mask[:, None], interpolated_trans, _cur_ins_trans
-            )
-        else:
-            trans_cur_frame = self.instances_trans[self.cur_frame] # (num_instances, 3)
+            if cur_frame + prev_next_offset in test_list : 
+                quats_other_frame = quats_other_frame.detach()
+                trans_other_frame = trans_other_frame.detach()
+
+            weight = avg_scale
+            interpolated_quats = interpolate_quats(quats_cur_frame, quats_other_frame, weight)
+            interpolated_trans = trans_cur_frame + avg_scale * (trans_other_frame - trans_cur_frame)
+
+            inter_valid_mask = self.instances_fv[cur_frame] & self.instances_fv[cur_frame + prev_next_offset]
+            quats_cur_frame = torch.where(inter_valid_mask[:, None], interpolated_quats, quats_cur_frame)
+            trans_cur_frame = torch.where(inter_valid_mask[:, None], interpolated_trans, trans_cur_frame)
+
+        rot_per_pts = quat_to_rotmat(self.quat_act(quats_cur_frame))[self.point_ids[..., 0]]
         trans_per_pts = trans_cur_frame[self.point_ids[..., 0]]
-        
-        # transform the means to world space
-        means = torch.bmm(
-            rot_per_pts, means.unsqueeze(-1)
-        ).squeeze(-1) + trans_per_pts
+        #self.check_inv_nans(rot_per_pts, "rot")
+        #self.check_inv_nans(quats_cur_frame, "quats")
+        means = torch.bmm(rot_per_pts, means.unsqueeze(-1)).squeeze(-1) + trans_per_pts
+
         return means
 
-    def transform_quats(self, quats: torch.Tensor) -> torch.Tensor:
+
+    def transform_quats(self, quats: torch.Tensor, avg_scale = 0.0, direction = "none") -> torch.Tensor:
         """
         transform the quats of instances to world space
         according to the pose at the current frame
@@ -369,19 +380,32 @@ class RigidNodes(VanillaGaussians):
         assert quats.shape[0] == self.point_ids.shape[0], \
             "its a bug here, we need to pass the mask for points_ids"
         global_quats_cur_frame = self.instances_quats[self.cur_frame]
-        global_quats_per_pts = global_quats_cur_frame[self.point_ids[..., 0]]
+        if direction in ["prev", "next"] and (
+            self.cur_frame - 1 > 0 and self.cur_frame + 1 < self.num_frames
+        ):  
+            prev_next_offset = -1 if direction == "prev" else 1
+            global_quats_other_frame = self.instances_quats[self.cur_frame + prev_next_offset]
+            global_quats_cur_frame_interp = interpolate_quats(global_quats_cur_frame, global_quats_other_frame, avg_scale)
+        else: 
+            global_quats_cur_frame_interp = global_quats_cur_frame
+
+
+        global_quats_per_pts = global_quats_cur_frame_interp[self.point_ids[..., 0]]
             
         global_quats_per_pts = self.quat_act(global_quats_per_pts)
         _quats = self.quat_act(quats)
+
         return quat_mult(global_quats_per_pts, _quats)
 
-    def get_gaussians(self, cam: dataclass_camera) -> Dict[str, torch.Tensor]:
+    def get_gaussians(self, cam: dataclass_camera, avg_scale = 0.0, direction = "none") -> Dict[str, torch.Tensor]:
         filter_mask = torch.ones_like(self._means[:, 0], dtype=torch.bool)
         self.filter_mask = filter_mask
-        # NOTE: hack here, need to consider a gaussian filter for efficient rendering
-        
-        world_means = self.transform_means(self._means)
-        world_quats = self.transform_quats(self._quats)
+        #import copy
+        #world_means = self.transform_means(copy.deepcopy(self._means), avg_scale, direction)
+        #world_quats = self.transform_quats(copy.deepcopy(self._quats), avg_scale, direction)
+
+        world_means = self.transform_means(self._means, avg_scale, direction)
+        world_quats = self.transform_quats(self._quats, avg_scale, direction)
         
         # get colors of gaussians
         colors = torch.cat((self._features_dc[:, None, :], self._features_rest), dim=1)
@@ -421,6 +445,7 @@ class RigidNodes(VanillaGaussians):
             "_scales": activated_scales[filter_mask],
         }
         return gs_dict
+
 
     def get_instance_activated_gs_dict(self, ins_id: int) -> Dict[str, torch.Tensor]:
         pts_mask = self.point_ids[..., 0] == ins_id
