@@ -15,6 +15,7 @@ import nerfview
 from pytorch_msssim import SSIM
 from torchmetrics.image import PeakSignalNoiseRatio
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+from datasets.base.pixel_source import ScenePixelSource
 
 from models.gaussians.basics import *
 
@@ -75,6 +76,7 @@ class BasicTrainer(nn.Module):
         num_full_images: int = 0,
         test_set_indices: List[int] = None,
         scene_aabb: torch.Tensor = None,
+        pixel_source: ScenePixelSource = None,
         device=None
     ):
         super().__init__()
@@ -88,6 +90,7 @@ class BasicTrainer(nn.Module):
         self.num_iters = self.optim_general.get("num_iters", 30000)
         self.gaussian_optim_general_cfg = gaussian_optim_general_cfg
         self.gaussian_ctrl_general_cfg = gaussian_ctrl_general_cfg
+        self.pixel_source = pixel_source
         self.step = 0
         self.device = device
         
@@ -243,7 +246,47 @@ class BasicTrainer(nn.Module):
             'eps': 1e-15,
             'weight_decay': 0
         })    
-            
+
+        
+        self.pixel_source.depth_map_scaling_front = torch.nn.Parameter(1.00*torch.ones(self.num_timesteps).to(self.device))
+        self.register_parameter('depth_map_scaling_front', self.pixel_source.depth_map_scaling_front)
+        groups.append({
+            'params': [self.pixel_source.depth_map_scaling_front],
+            'name': 'depth_map_scaling_front',
+            'lr': 0.001,
+            'eps': 1e-15,
+            'weight_decay': 0
+        })     
+
+        self.pixel_source.depth_map_shift_front = torch.nn.Parameter(0.00*torch.ones(self.num_timesteps).to(self.device))
+        self.register_parameter('depth_map_shift_front', self.pixel_source.depth_map_shift_front)
+        groups.append({
+            'params': [self.pixel_source.depth_map_shift_front],
+            'name': 'depth_map_shift_front',
+            'lr': 0.001,
+            'eps': 1e-15,
+            'weight_decay': 0
+        })      
+
+        self.pixel_source.depth_map_scaling_back = torch.nn.Parameter(1.00*torch.ones(self.num_timesteps).to(self.device))
+        self.register_parameter('depth_map_scaling_back', self.pixel_source.depth_map_scaling_back)
+        groups.append({
+            'params': [self.pixel_source.depth_map_scaling_back],
+            'name': 'depth_map_scaling_back',
+            'lr': 0.001,
+            'eps': 1e-15,
+            'weight_decay': 0
+        })     
+
+        self.pixel_source.depth_map_shift_back = torch.nn.Parameter(0.00*torch.ones(self.num_timesteps).to(self.device))
+        self.register_parameter('depth_map_shift_back', self.pixel_source.depth_map_shift_back)
+        groups.append({
+            'params': [self.pixel_source.depth_map_shift_back],
+            'name': 'depth_map_shift_back',
+            'lr': 0.001,
+            'eps': 1e-15,
+            'weight_decay': 0
+        })       
 
         self.optimizer = torch.optim.Adam(groups, lr=0.0, eps=1e-15)
         self.lr_schedulers = lr_schedulers
@@ -269,6 +312,7 @@ class BasicTrainer(nn.Module):
                 normalize=depth_loss_cfg.normalize,
                 use_inverse_depth=depth_loss_cfg.inverse_depth,
             )
+            depth_smooth_loss2 = None
         self.depth_loss_fn = depth_loss_fn
     
     def optimizer_zero_grad(self) -> None:
@@ -379,7 +423,7 @@ class BasicTrainer(nn.Module):
             "class_labels": [],
         }
         for class_name in self.gaussian_classes.keys():
-            if class_name is "RigidNodes":
+            if class_name == "RigidNodes":
                 gs = self.models[class_name].get_gaussians(cam,  avg_scale, direction)
             else:
                 gs = self.models[class_name].get_gaussians(cam)
@@ -533,6 +577,19 @@ class BasicTrainer(nn.Module):
         # ----------------- backward ----------------
         total_loss = sum(loss for loss in loss_dict.values())
         self.grad_scaler.scale(total_loss).backward()
+        # Assuming only 'RigidNodes' model contains 'instances_quats'
+        for model_name, model in self.models.items():
+            if model_name == 'RigidNodes':  # Check only the 'RigidNodes' model
+                for param_name, param in model.named_parameters():
+                    if param_name == 'instances_quats':  # Check only 'instances_quats' parameter
+                        if param.grad is not None:
+                            if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                                print(f"⚠️  Gradient anomalies detected in: {param_name}")
+                            # Replace NaNs with 0 in the gradient
+                            param.grad = torch.nan_to_num(param.grad, nan=0.0)
+                            # Replace Infs with 0 in the gradient
+                            param.grad = torch.nan_to_num(param.grad, posinf=0.0, neginf=0.0)
+
         self.optimizer_step()
         
         scale = self.grad_scaler.get_scale()
@@ -544,6 +601,46 @@ class BasicTrainer(nn.Module):
                 if group["name"] in self.lr_schedulers:
                     new_lr = self.lr_schedulers[group["name"]](self.step)
                     group["lr"] = new_lr
+                    
+
+    def gradient_smoothness_loss(self, depth_map, alpha=1.0, shift_size=1):
+        """
+        Compute smoothness loss using gradients of the depth map with variable shift size.
+        This encourages smoothness while preserving edges.
+
+        Args:
+            depth_map: Tensor of shape (H, W) containing the depth values
+            alpha: Weight for the smoothness loss (default: 1.0)
+            shift_size: Number of pixels to shift for gradient computation (default: 1)
+
+        Returns:
+            Smoothness loss value
+        """
+        # Add batch and channel dimensions for gradient computation
+        depth = depth_map.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+
+        # Compute gradients with variable shift size
+        # Vertical gradient (y direction)
+        if shift_size < depth.shape[2]:
+            dy = torch.abs(depth[:, :, shift_size:, :] - depth[:, :, :-shift_size, :])
+        else:
+            dy = torch.zeros(1, 1, 0, depth.shape[3], device=depth.device)
+
+        # Horizontal gradient (x direction)
+        if shift_size < depth.shape[3]:
+            dx = torch.abs(depth[:, :, :, shift_size:] - depth[:, :, :, :-shift_size])
+        else:
+            dx = torch.zeros(1, 1, depth.shape[2], 0, device=depth.device)
+
+        # Sum of the mean absolute gradients
+        # Handle empty tensors
+        loss = 0
+        if dx.numel() > 0:
+            loss += torch.mean(dx)
+        if dy.numel() > 0:
+            loss += torch.mean(dy)
+
+        return alpha * loss
                 
     def compute_losses(
         self,
@@ -582,7 +679,7 @@ class BasicTrainer(nn.Module):
         # depth loss
         if self.depth_loss_fn is not None:
             gt_depth = image_infos["lidar_depth_map"] 
-            lidar_hit_mask = (gt_depth > 0).float() * valid_loss_mask
+            lidar_hit_mask = ((gt_depth > 0)).float() * valid_loss_mask
             pred_depth = outputs["depth"]
             depth_loss = self.depth_loss_fn(pred_depth, gt_depth, lidar_hit_mask)
             
@@ -593,6 +690,11 @@ class BasicTrainer(nn.Module):
                 decay_weight = 1
             depth_loss = depth_loss * self.losses_dict.depth.w * decay_weight
             loss_dict.update({"depth_loss": depth_loss})
+
+            #depth_smooth_loss2 = 0.01*self.gradient_smoothness_loss(pred_depth, alpha=1.0, shift_size=5)
+            #loss_dict.update({"depth_smooth_loss2": depth_smooth_loss2})
+
+
             
         # ----- reg loss -----
         opacity_entropy_reg = self.losses_dict.get("opacity_entropy", None)
@@ -714,6 +816,10 @@ class BasicTrainer(nn.Module):
             logger.info(f"{class_name}: {msg}")
         self.avg_renderings_scale_front = state_dict.pop("avg_renderings_scale_front", None)
         self.avg_renderings_scale_back = state_dict.pop("avg_renderings_scale_back", None)
+        self.pixel_source.depth_map_scaling_front = state_dict.pop("depth_map_scaling_front", None)
+        self.pixel_source.depth_map_shift_front = state_dict.pop("depth_map_shift_front", None)
+        self.pixel_source.depth_map_scaling_back = state_dict.pop("depth_map_scaling_back", None)
+        self.pixel_source.depth_map_shift_back = state_dict.pop("depth_map_shift_back", None)
         msg = super().load_state_dict(state_dict, strict)
         logger.info(f"BasicTrainer: {msg}")
         

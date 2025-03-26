@@ -8,7 +8,7 @@ import logging
 import numpy as np
 from tqdm import tqdm
 from PIL import Image
-
+import torch.nn as nn
 import torch
 from pytorch3d.transforms import matrix_to_quaternion
 from torch import Tensor
@@ -92,6 +92,24 @@ def sparse_lidar_map_downsampler(lidar_depth_map, downscale_factor):
     downsampled_lidar_map[raw_mask > 0] = raw_avg[raw_mask > 0] / raw_mask[raw_mask > 0]
     return downsampled_lidar_map
 
+def resize_depth_map(lidar_depth_map, target_height, target_width):
+    raw_avg = torch.nn.functional.interpolate(
+        lidar_depth_map.unsqueeze(0).unsqueeze(0),
+        size=(target_height, target_width),
+        mode="area",
+    ).squeeze(0).squeeze(0)
+
+    raw_mask = torch.nn.functional.interpolate(
+        (lidar_depth_map > 0).float().unsqueeze(0).unsqueeze(0),
+        size=(target_height, target_width),
+        mode="area",
+    ).squeeze(0).squeeze(0)
+
+    resized_lidar = torch.zeros_like(raw_avg)
+    resized_lidar[raw_mask > 0] = raw_avg[raw_mask > 0] / raw_mask[raw_mask > 0]
+
+    return resized_lidar
+
 class CameraData(object):
     def __init__(
         self,
@@ -144,7 +162,9 @@ class CameraData(object):
         self.image_error_maps = None # will be built by: self.build_image_error_buffer()
         self.to(self.device)
         self.downscale_factor = 1.0
+        self.load_depth_from_video()
         
+                
     @property
     def num_frames(self) -> int:
         return self.cam_to_worlds.shape[0]
@@ -387,7 +407,19 @@ class CameraData(object):
     ):
         self.normalized_time = normalized_time.to(self.device)
 
-    
+    def load_depth_from_video(self):
+        disparity_from_video_front = np.load("/home/dense/daniel/drivestudio/drivestudio/data/nuscenes/raw/nuscenes/depths_front_scene814/scene814_video_depths.npz")['depths'] 
+        #disparity_from_video_front = np.load("/external/10g/carlnas/fs1/outputs_video_depths/814_enhanced/nuscenes_814_enhanced_depths.npz")['depths'] 
+        depth_from_video_front = 1/disparity_from_video_front
+        depth_from_video_front[disparity_from_video_front == 0] = 0
+        self.depth_from_video_front = torch.tensor(depth_from_video_front, dtype=torch.float32, device="cuda")
+
+        #disparity_from_video_back = np.load("/home/dense/daniel/drivestudio/drivestudio/data/nuscenes/raw/nuscenes/depths_back_scene814/nuscenes_814_back_depths.npz")['depths'] 
+        #depth_from_video_back = 1/disparity_from_video_back
+        #depth_from_video_back[disparity_from_video_back == 0] = 0
+        #self.depth_from_video_back = torch.tensor(depth_from_video_back, dtype=torch.float32, device="cuda")
+
+        
     def build_image_error_buffer(self) -> None:
         """
         Build the image error buffer.
@@ -476,8 +508,19 @@ class CameraData(object):
         if self.image_error_maps is not None:
             self.image_error_maps = self.image_error_maps.to(device)
 
+    def normalize_depths_video(self, frame_idx: int, lidar_depth_map: torch.Tensor, depth_from_video: torch.Tensor, depth_map_scaling: float, depth_map_shift: float):
+        device = depth_from_video.device  
+        lidar_depth_map = lidar_depth_map.to(device) 
+        lidar_depth_map_nonzero = lidar_depth_map[lidar_depth_map > 0]  
+        lidar_median = torch.median(lidar_depth_map_nonzero)
+        video_depth_median = torch.median(depth_from_video[lidar_depth_map > 0])
+        normalized_depth = depth_from_video * ((lidar_median / video_depth_median) * depth_map_scaling) + depth_map_shift
+        mask = normalized_depth > 50
+        normalized_depth[mask] = torch.where(lidar_depth_map[mask] > 0, lidar_depth_map[mask], torch.tensor(0.0, device=normalized_depth.device))
+        return normalized_depth.to("cpu")
+
     
-    def get_image(self, frame_idx: int) -> Dict[str, Tensor]:
+    def get_image(self, frame_idx: int, depth_map_scaling: float, depth_map_shift: float, use_depth_map_front = False, use_depth_map_back = False) -> Dict[str, Tensor]:
         """
         Get the rays for rendering the given frame index.
         Args:
@@ -585,6 +628,13 @@ class CameraData(object):
         
         if self.lidar_depth_maps is not None:
             lidar_depth_map = self.lidar_depth_maps[frame_idx]
+            
+            if depth_map_scaling != None: 
+                if use_depth_map_front and (self.cam_id == 0):
+                    depth_from_video = resize_depth_map(self.depth_from_video_front[frame_idx], *lidar_depth_map.shape)
+                if use_depth_map_back and (self.cam_id == 5):
+                    depth_from_video = resize_depth_map(self.depth_from_video_back[-1-frame_idx], *lidar_depth_map.shape)
+                lidar_depth_map = self.normalize_depths_video(frame_idx, lidar_depth_map, depth_from_video, depth_map_scaling, depth_map_shift)
 
             if self.downscale_factor != 1.0:
                 # BUG: cannot use, need futher investigation
@@ -727,6 +777,10 @@ class ScenePixelSource(abc.ABC):
         self.device = device
         self._downscale_factor = 1 / pixel_data_config.downscale
         self._old_downscale_factor = []
+        self.depth_map_scaling_front = None
+        self.depth_map_shift_front = None
+        self.depth_map_scaling_back = None
+        self.depth_map_shift_back = None
 
     @abc.abstractmethod
     def load_cameras(self) -> None:
@@ -846,10 +900,18 @@ class ScenePixelSource(abc.ABC):
         Returns:
             a dict containing the rays for rendering the given image index.
         """
+        scale = None
+        shift = None
         unique_cam_idx, frame_idx = self.parse_img_idx(img_idx)
+        if self.data_cfg.use_depth_map_front and (unique_cam_idx == 0):
+            scale = self.depth_map_scaling_front[frame_idx]
+            shift = self.depth_map_shift_front[frame_idx]
+        if self.data_cfg.use_depth_map_back and (unique_cam_idx == 5):
+            scale = self.depth_map_scaling_back[frame_idx]
+            shift = self.depth_map_shift_back[frame_idx]
         for cam_id in self.camera_list:
             if unique_cam_idx == self.camera_data[cam_id].unique_cam_idx:
-                return self.camera_data[cam_id].get_image(frame_idx)
+                return self.camera_data[cam_id].get_image(frame_idx, scale, shift, self.data_cfg.use_depth_map_front, self.data_cfg.use_depth_map_back)
 
     @property
     def camera_list(self) -> List[int]:

@@ -34,6 +34,10 @@ def do_evaluation(
     trainer.set_eval()
 
     logger.info("Evaluating Pixels...")
+    print("depth map scale: ", dataset.pixel_source.depth_map_scaling_front)
+    print("depth map shift: ", dataset.pixel_source.depth_map_shift_front)
+    print("depth map scale: ", dataset.pixel_source.depth_map_scaling_back)
+    print("depth map shift: ", dataset.pixel_source.depth_map_shift_back)
     if dataset.test_image_set is not None and cfg.render.render_test:
         logger.info("Evaluating Test Set Pixels...")
 
@@ -192,6 +196,7 @@ def main(args):
         num_full_images=len(dataset.full_image_set),
         test_set_indices=dataset.test_timesteps,
         scene_aabb=dataset.get_aabb().reshape(2, 3),
+        pixel_source = dataset.pixel_source,
         device=device
     )
     
@@ -267,7 +272,7 @@ if __name__ == "__main__":
 
         import debugpy
 
-        debugpy.listen(("0.0.0.0", 5678))
+        debugpy.listen(("0.0.0.0", 5679))
 
         print("Waiting for debugger attach")
 

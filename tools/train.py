@@ -109,6 +109,7 @@ def main(args):
 
     # build dataset
     dataset = DrivingDataset(data_cfg=cfg.data)
+    
 
     # setup trainer
     trainer = import_str(cfg.trainer.type)(
@@ -119,6 +120,7 @@ def main(args):
         num_full_images=len(dataset.full_image_set),
         test_set_indices=dataset.test_timesteps,
         scene_aabb=dataset.get_aabb().reshape(2, 3),
+        pixel_source = dataset.pixel_source,
         device=device
     )
     
@@ -168,6 +170,7 @@ def main(args):
     
     # setup optimizer  
     trainer.initialize_optimizer()
+
     
     # setup metric logger
     metrics_file = os.path.join(cfg.log_dir, "metrics.json")
@@ -189,6 +192,7 @@ def main(args):
         #----------------------------     Validate     ------------------------------
         if step % cfg.logging.vis_freq == 0 and cfg.logging.vis_freq > 0:
             logger.info("Visualizing...")
+            
             test_timesteps = cfg.data.pixel_source.get("test_timesteps", None)
             if test_timesteps is None:
                 #select timestep from training dataset for validation
@@ -245,10 +249,15 @@ def main(args):
                     wandb.log({"image_rendering/" + k: wandb.Image(v)})
             del render_results
             torch.cuda.empty_cache()
+        
 
         if step % cfg.logging.print_freq == 0:
             print("scale back: ", trainer.avg_renderings_scale_back)
             print("scale front: ", trainer.avg_renderings_scale_front)
+            print("depth map scale: ", dataset.pixel_source.depth_map_scaling_front)
+            print("depth map shift: ", dataset.pixel_source.depth_map_shift_front)
+            print("depth map scale: ", dataset.pixel_source.depth_map_scaling_back)
+            print("depth map shift: ", dataset.pixel_source.depth_map_shift_back)
         
     
         #----------------------------------------------------------------------------
@@ -257,7 +266,7 @@ def main(args):
         trainer.set_train()
         trainer.preprocess_per_train_step(step=step)
         trainer.optimizer_zero_grad() # zero grad
-        
+     
         # get data
         train_step_camera_downscale = trainer._get_downscale_factor()
         image_infos, cam_infos = dataset.train_image_set.next(train_step_camera_downscale)
@@ -362,6 +371,10 @@ def main(args):
 
     print("scale back: ", trainer.avg_renderings_scale_back)
     print("scale front: ", trainer.avg_renderings_scale_front)
+    print("depth map scale: ", dataset.pixel_source.depth_map_scaling_front)
+    print("depth map shift: ", dataset.pixel_source.depth_map_shift_front)
+    print("depth map scale: ", dataset.pixel_source.depth_map_scaling_back)
+    print("depth map shift: ", dataset.pixel_source.depth_map_shift_back)
     
     if args.enable_viewer:
         print("Viewer running... Ctrl+C to exit.")
@@ -397,7 +410,7 @@ if __name__ == "__main__":
 
         import debugpy
 
-        debugpy.listen(("0.0.0.0", 5677))
+        debugpy.listen(("0.0.0.0", 5678))
 
         print("Waiting for debugger attach")
 

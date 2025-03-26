@@ -358,6 +358,7 @@ class RigidNodes(VanillaGaussians):
             weight = avg_scale
             interpolated_quats = interpolate_quats(quats_cur_frame, quats_other_frame, weight)
             interpolated_trans = trans_cur_frame + avg_scale * (trans_other_frame - trans_cur_frame)
+            self.check_inv_nans(interpolated_quats, "quats interp")
 
             inter_valid_mask = self.instances_fv[cur_frame] & self.instances_fv[cur_frame + prev_next_offset]
             quats_cur_frame = torch.where(inter_valid_mask[:, None], interpolated_quats, quats_cur_frame)
@@ -365,8 +366,8 @@ class RigidNodes(VanillaGaussians):
 
         rot_per_pts = quat_to_rotmat(self.quat_act(quats_cur_frame))[self.point_ids[..., 0]]
         trans_per_pts = trans_cur_frame[self.point_ids[..., 0]]
-        #self.check_inv_nans(rot_per_pts, "rot")
-        #self.check_inv_nans(quats_cur_frame, "quats")
+        self.check_inv_nans(rot_per_pts, "rot")
+        self.check_inv_nans(quats_cur_frame, "quats")
         means = torch.bmm(rot_per_pts, means.unsqueeze(-1)).squeeze(-1) + trans_per_pts
 
         return means
@@ -400,9 +401,6 @@ class RigidNodes(VanillaGaussians):
     def get_gaussians(self, cam: dataclass_camera, avg_scale = 0.0, direction = "none") -> Dict[str, torch.Tensor]:
         filter_mask = torch.ones_like(self._means[:, 0], dtype=torch.bool)
         self.filter_mask = filter_mask
-        #import copy
-        #world_means = self.transform_means(copy.deepcopy(self._means), avg_scale, direction)
-        #world_quats = self.transform_quats(copy.deepcopy(self._quats), avg_scale, direction)
 
         world_means = self.transform_means(self._means, avg_scale, direction)
         world_quats = self.transform_quats(self._quats, avg_scale, direction)
