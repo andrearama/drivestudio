@@ -534,6 +534,14 @@ class BasicTrainer(nn.Module):
         total_loss = sum(loss for loss in loss_dict.values())
         self.grad_scaler.scale(total_loss).backward()
         self.optimizer_step()
+
+        for model_name, model in self.models.items():
+            if model_name == 'RigidNodes': 
+                for param_name, param in model.named_parameters():
+                    if param_name == 'instances_quats': 
+                        if param.grad is not None:
+                            param.grad = torch.nan_to_num(param.grad, nan=0.0)
+                            param.grad = torch.nan_to_num(param.grad, posinf=0.0, neginf=0.0)
         
         scale = self.grad_scaler.get_scale()
         self.grad_scaler.update()
