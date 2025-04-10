@@ -8,6 +8,8 @@ from models.trainers.base import BasicTrainer, GSModelType
 from utils.misc import import_str
 from utils.geometry import uniform_sample_sphere
 from models.gaussians.basics import dataclass_gs, dataclass_camera, interpolate_quats
+from models.trainers.utils import depth_to_world_normals_opengl_mm4, get_gaussian_axes, flip_opposing_normals
+
 from pytorch3d.transforms import quaternion_to_matrix
 
 
@@ -277,7 +279,47 @@ class MultiTrainer(BasicTrainer):
         else:
             gs = self.collect_gaussians(cam=self.processed_cam, image_ids=image_infos["img_idx"].flatten()[0], avg_scale = 0.0, direction = "none")
             final_output = self.render_outputs(image_infos, gs, self.processed_cam)
-                
+
+        final_output["emitted_light"] = torch.abs(final_output["emitted_light"])
+        cam_name = camera_infos['cam_name']
+
+        if self.use_emitted:
+            final_output["rgb"] = final_output["rgb"] + final_output["emitted_light"]
+
+        if self.learn_fixednoise:
+            if list(final_output["rgb"].shape) == [450, 800, 3] : 
+                final_output["rgb"] =  final_output["rgb"] + self.custom_tensor[cam_name][...,:3] + self.custom_tensor[cam_name][...,3:]*final_output["rgb"]
+
+        if self.model_flare:
+            if list(final_output["rgb"].shape) == [450, 800, 3] : 
+                    final_output["flare"] = self.flare_kernel(final_output["emitted_light"].to("cuda:1") )[0].to("cuda:0").permute(1,2,0)
+                    final_output["rgb"] =  final_output["rgb"] + final_output["flare"]
+        
+        if self.use_normals:
+            normals_depth = depth_to_world_normals_opengl_mm4(20*final_output["depth"][...,0], camera_infos["camera_to_world"])*0.5 + 0.5
+            final_output["normals_depth"] = normals_depth
+            assert(len(gs) == 3)
+            axis1, axis2, normal = get_gaussian_axes(gs[1].quats, gs[1].scales)
+            corrected_normals = flip_opposing_normals(gs[1].means, normal, camera_infos["camera_to_world"])
+            normals_6 = torch.cat([corrected_normals*0.5 + 0.5, 0*corrected_normals],-1)
+            outputs_v_normal_corrected, __ = self.render_gaussians(
+                gs=gs[1],
+                cam=self.processed_cam,
+                near_plane=self.render_cfg.near_plane,
+                far_plane=self.render_cfg.far_plane,
+                render_mode="RGB+ED",
+                radius_clip=self.render_cfg.get('radius_clip', 0.),
+                tot_color = normals_6,
+                is_light = True
+            )
+            final_output["normals_splats"] = outputs_v_normal_corrected["rgb_gaussians"]
+            min_values, min_indices = torch.min(gs[1].scales, dim=1)
+            final_output["scale_normals"] = min_values
+            
+        if cam_name in ["CAM_FRONT", "CAM_BACK"]:
+            final_output["is_frontback"] = True            
+        
+        final_output["rgb"] = torch.clamp(final_output["rgb"], 0, 1)
         return final_output
 
     def render_outputs(
@@ -311,7 +353,7 @@ class MultiTrainer(BasicTrainer):
                 for class_name in self.gaussian_classes.keys():
                     gaussian_mask = self.pts_labels == self.gaussian_classes[class_name]
                    
-                    sep_rgb, sep_depth, sep_opacity = render_fn(gaussian_mask)
+                    sep_rgb, sep_depth, sep_opacity, emtted_light = render_fn(gaussian_mask)
                     outputs[class_name+"_rgb"] = self.affine_transformation(sep_rgb, image_infos)
                     outputs[class_name+"_opacity"] = sep_opacity
                     outputs[class_name+"_depth"] = sep_depth
@@ -319,7 +361,7 @@ class MultiTrainer(BasicTrainer):
         if not self.training or self.render_dynamic_mask:
             with torch.no_grad():
                 gaussian_mask = self.pts_labels != self.gaussian_classes["Background"]
-                sep_rgb, sep_depth, sep_opacity = render_fn(gaussian_mask)
+                sep_rgb, sep_depth, sep_opacity, emtted_light = render_fn(gaussian_mask)
                 outputs["Dynamic_rgb"] = self.affine_transformation(sep_rgb, image_infos)
                 outputs["Dynamic_opacity"] = sep_opacity
                 outputs["Dynamic_depth"] = sep_depth

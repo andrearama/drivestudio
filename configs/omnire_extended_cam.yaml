@@ -49,6 +49,8 @@ trainer:
       lr: 0.0025
     sh_rest:
       lr: 0.000125
+    _emitting_light:
+      lr: 0.000125        
     opacity:
       lr: 0.05
     scaling:

@@ -3,6 +3,7 @@ from omegaconf import OmegaConf
 import os
 import time
 import logging
+import random
 
 import numpy as np
 import torch
@@ -18,6 +19,9 @@ from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from datasets.base.pixel_source import ScenePixelSource
 
 from models.gaussians.basics import *
+
+from models.trainers.utils import get_loss_normal_tensor, get_loss_mask_flare
+from models.nn.networks import BigKernel
 
 logger = logging.getLogger()
 
@@ -77,6 +81,10 @@ class BasicTrainer(nn.Module):
         test_set_indices: List[int] = None,
         scene_aabb: torch.Tensor = None,
         pixel_source: ScenePixelSource = None,
+        learn_fixednoise: bool = False,
+        model_flare: bool = False,
+        use_emitted: bool = False,
+        use_normals: bool = False,
         device=None
     ):
         super().__init__()
@@ -93,6 +101,10 @@ class BasicTrainer(nn.Module):
         self.pixel_source = pixel_source
         self.step = 0
         self.device = device
+        self.learn_fixednoise = learn_fixednoise
+        self.model_flare = model_flare
+        self.use_emitted = use_emitted
+        self.use_normals = use_normals
         
         # dataset infos
         self.num_train_images = num_train_images
@@ -178,6 +190,15 @@ class BasicTrainer(nn.Module):
     
     def initialize_optimizer(self) -> None:
         
+        if self.learn_fixednoise :
+            camera_names = ["CAM_FRONT", "CAM_FRONT_LEFT", "CAM_FRONT_RIGHT", "CAM_BACK", "CAM_BACK_LEFT","CAM_BACK_RIGHT"]
+            self.custom_tensor = {}
+            for cam_name in camera_names:
+                self.custom_tensor[cam_name] = torch.nn.Parameter(0.01*torch.randn(450, 800, 6).to(self.device))
+
+        if self.model_flare:
+            self.flare_kernel = BigKernel().to("cuda:1")
+
         # get param groups first
         self.param_groups = {}
         for class_name, model in self.models.items():
@@ -228,6 +249,25 @@ class BasicTrainer(nn.Module):
                 # adjust max_steps to account for opt_after
                 sched_cfg.max_steps = sched_cfg.max_steps - sched_cfg.opt_after
                 lr_schedulers[params_name] = lr_scheduler_fn(sched_cfg, lr_init)
+
+        if self.learn_fixednoise:
+            for cam_name in camera_names:
+                groups.append({
+                    'params': [self.custom_tensor[cam_name]],
+                    'name': 'custom_tensor_'+cam_name,
+                    'lr': 0.0005,
+                    'eps': 1e-15,
+                    'weight_decay': 0
+                })   
+
+        if self.model_flare:
+            groups.append({
+                'params': self.flare_kernel.parameters(),
+                'name': 'flare',
+                'lr': 0.001,  # Match your custom tensor learning rate
+                'eps': 1e-15,
+                'weight_decay': 0
+            })    
 
         self.avg_renderings_scale_front = torch.nn.Parameter(0.05*torch.ones(self.num_timesteps).to(self.device))
         groups.append({
@@ -459,51 +499,96 @@ class BasicTrainer(nn.Module):
         self,
         gs: dataclass_gs,
         cam: dataclass_camera,
+        is_light = False,
+        tot_color = None,
+        not_vehicles = None,
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
-    
         def render_fn(opaticy_mask=None, return_info=False):
-            renders, alphas, info = rasterization(
-                means=gs.means,
-                quats=gs.quats,
-                scales=gs.scales,
-                opacities=gs.opacities.squeeze()*opaticy_mask if opaticy_mask is not None else gs.opacities.squeeze(),
-                colors=gs.rgbs,
-                viewmats=torch.linalg.inv(cam.camtoworlds)[None, ...],  # [C, 4, 4]
-                Ks=cam.Ks[None, ...],  # [C, 3, 3]
-                width=cam.W,
-                height=cam.H,
-                packed=self.render_cfg.packed,
-                absgrad=self.render_cfg.absgrad,
-                sparse_grad=self.render_cfg.sparse_grad,
-                rasterize_mode="antialiased" if self.render_cfg.antialiased else "classic",
-                **kwargs,
-            )
+
+            if tot_color is None:
+                renders, alphas, info = rasterization( #, visibility
+                    means=gs.means,
+                    quats=gs.quats,
+                    scales=gs.scales,
+                    opacities=gs.opacities.squeeze()*opaticy_mask if opaticy_mask is not None else gs.opacities.squeeze(),
+                    colors=gs.rgbs,
+                    viewmats=torch.linalg.inv(cam.camtoworlds)[None, ...],  # [C, 4, 4]
+                    Ks=cam.Ks[None, ...],  # [C, 3, 3]
+                    width=cam.W,
+                    height=cam.H,
+                    packed=self.render_cfg.packed,
+                    absgrad=self.render_cfg.absgrad,
+                    sparse_grad=self.render_cfg.sparse_grad,
+                    rasterize_mode="antialiased" if self.render_cfg.antialiased else "classic",
+                    **kwargs,
+                )
+                visibility = None #
+            else:
+                renders, alphas, info = rasterization( #, visibility
+                    means=gs.means,
+                    quats=gs.quats,
+                    scales=gs.scales,
+                    opacities=gs.opacities.squeeze()*opaticy_mask if opaticy_mask is not None else gs.opacities.squeeze(),
+                    colors=tot_color,
+                    viewmats=torch.linalg.inv(cam.camtoworlds)[None, ...],  # [C, 4, 4]
+                    Ks=cam.Ks[None, ...],  # [C, 3, 3]
+                    width=cam.W,
+                    height=cam.H,
+                    packed=self.render_cfg.packed,
+                    absgrad=self.render_cfg.absgrad,
+                    sparse_grad=self.render_cfg.sparse_grad,
+                    rasterize_mode="antialiased" if self.render_cfg.antialiased else "classic",
+                    **kwargs,
+                )
+                visibility = None #
 
             renders = renders[0]
             alphas = alphas[0].squeeze(-1)
             assert self.render_cfg.batch_size == 1, "batch size must be 1, will support batch size > 1 in the future"
             
-            assert renders.shape[-1] == 4, f"Must render rgb, depth and alpha"
-            rendered_rgb, rendered_depth = torch.split(renders, [3, 1], dim=-1)
+            if renders.shape[-1] == 4:
+                rendered_rgb, rendered_depth = torch.split(renders, [3, 1], dim=-1)
+                rendered_emtted_light = False
+            elif renders.shape[-1] == 7:
+                rendered_rgb, rendered_emtted_light, rendered_depth = torch.split(renders, [3, 3, 1], dim=-1)
+            else:
+                print(renders.shape[-1])
+                assert False
+
             
             if not return_info:
-                return torch.clamp(rendered_rgb, max=1.0), rendered_depth, alphas[..., None]
+                return torch.clamp(rendered_rgb, max=1.0), rendered_depth, alphas[..., None], rendered_emtted_light
             else:
-                return torch.clamp(rendered_rgb, max=1.0), rendered_depth, alphas[..., None], info
+                return torch.clamp(rendered_rgb, max=1.0), rendered_depth, alphas[..., None], rendered_emtted_light, info, visibility
         
         # render rgb and opacity
-        rgb, depth, opacity, self.info = render_fn(return_info=True)
-        results = {
-            "rgb_gaussians": rgb,
-            "depth": depth, 
-            "opacity": opacity
-        }
-        
-        if self.training:
-            self.info["means2d"].retain_grad()
+        if not is_light:
+            rgb, depth, opacity, emtted_light, self.info, visibility = render_fn(return_info=True)
+            results = {
+                "rgb_gaussians": rgb,
+                "depth": depth, 
+                "opacity": opacity,
+                "emitted_light":emtted_light,
+                #"visibility":visibility
+            }
+            
+            if self.training:
+                self.info["means2d"].retain_grad()
+        else:
+            rgb, depth, opacity, emtted_light, info, visibility = render_fn(opaticy_mask=not_vehicles, return_info=True)
+            results = {
+                "rgb_gaussians": rgb,
+                "depth": depth, 
+                "opacity": opacity,
+                "emitted_light":emtted_light,
+                #"visibility":visibility
+            }      
+            if self.training:
+                info["means2d"].retain_grad()                  
         
         return results, render_fn
+
 
     def affine_transformation(
         self,
@@ -656,6 +741,10 @@ class BasicTrainer(nn.Module):
             valid_loss_mask = (1.0 - image_infos["egocar_masks"]).float()
         else:
             valid_loss_mask = torch.ones_like(image_infos["sky_masks"])
+        
+        if self.losses_dict.get("clip_rgb_loss_depth", False) :
+            if random.random() > 0.5:
+                valid_loss_mask *= 1.0*(outputs["depth"][...,0] < 50)
             
         gt_rgb = image_infos["pixels"] * valid_loss_mask[..., None]
         predicted_rgb = outputs["rgb"] * valid_loss_mask[..., None]
@@ -749,6 +838,32 @@ class BasicTrainer(nn.Module):
             class_reg_loss = self.models[class_name].compute_reg_loss()
             for k, v in class_reg_loss.items():
                 loss_dict[f"{class_name}_{k}"] = v
+
+        # fixed noise loss : 
+        if self.learn_fixednoise : 
+            custom_tensor_loss = get_loss_normal_tensor(self.custom_tensor[cam_infos['cam_name']])
+            #print("custom_tensor_loss",custom_tensor_loss)
+            loss_dict.update({"custom_tensor_loss" : custom_tensor_loss})
+
+        # flare loss
+        if self.model_flare:
+            if "flare" in outputs:
+                flare_loss = 10*get_loss_mask_flare(image_infos, outputs["flare"], use_both = True)
+                loss_dict.update({"flare_loss" : self.losses_dict.rgb.w *flare_loss})
+
+        if self.use_normals:
+            if self.step > 6000 : 
+                normal_loss_consistency = torch.mean(torch.square(outputs["normals_depth"] - outputs["normals_splats"]))
+                normal_losses = 0.1*normal_loss_consistency
+
+                #normal_losses += 0.01*torch.mean(outputs["scale_normals"]**2)
+
+                if outputs["is_frontback"]:
+                    normal_loss_gt = torch.mean(torch.square(image_infos["normals"] - outputs["normals_splats"]))
+                    #normal_loss_gt = torch.mean(torch.square((image_infos["normals"] - outputs["normals_splats"])*(outputs["depth"] < 40) ))
+                    normal_losses += normal_loss_gt     
+                loss_dict.update({"normal_loss" : self.losses_dict.rgb.w *normal_losses})           
+
         return loss_dict
     
     def compute_metrics(

@@ -117,6 +117,9 @@ def render(
     # misc
     cam_names, cam_ids = [], []
 
+    #my 
+    normals_splats, normals_depth, normals = [], [], []
+
     if compute_metrics:
         psnrs, ssim_scores, lpipss = [], [], []
         masked_psnrs, masked_ssims = [], []
@@ -218,7 +221,13 @@ def render(
                 Dynamic_opacities.append(get_numpy(results["Dynamic_opacity"]))
             if "sky_masks" in image_infos:
                 sky_masks.append(get_numpy(image_infos["sky_masks"]))
-                
+            if "normals_splats" in results:
+                normals_splats.append(get_numpy(results["normals_splats"]))
+            if "normals_depth" in results:
+                normals_depth.append(get_numpy(results["normals_depth"]))
+            if "normals" in image_infos:
+                normals.append(get_numpy(image_infos["normals"]))
+
             # ------------- lidar ------------- #
             if "lidar_depth_map" in image_infos:
                 depth_map = image_infos["lidar_depth_map"]
@@ -378,6 +387,16 @@ def render(
         results_dict["SMPLNodes_opacities"] = SMPLNodes_opacities
     if len(Dynamic_opacities) > 0:
         results_dict["Dynamic_opacities"] = Dynamic_opacities
+
+    if len(normals_splats) > 0:
+        results_dict["normals_splats"] = normals_splats
+    if len(normals_depth) > 0:
+        results_dict["normals_depth"] = normals_depth
+    else:
+        asddsd
+    if len(image_infos) > 0:
+        results_dict["image_infos"] = image_infos
+
     return results_dict
 
 
@@ -500,7 +519,7 @@ def save_concatenated_videos(
                 frames = [
                     np.stack([frame, frame, frame], axis=-1) for frame in frames
                 ]
-            elif "depth" in key:
+            elif "depth" in key and key != "normals_depth":
                 try:
                     opacities = render_results[key.replace("depths", "opacities")][
                         i * num_cams : (i + 1) * num_cams
@@ -573,7 +592,7 @@ def save_seperate_videos(
                 frames = [
                     np.stack([frame, frame, frame], axis=-1) for frame in frames
                 ]
-            elif "depth" in key:
+            elif "depth" in key and key != "normals_depth":
                 try:
                     opacities = render_results[key.replace("depths", "opacities")][
                         i * num_cams : (i + 1) * num_cams

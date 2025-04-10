@@ -162,7 +162,9 @@ class CameraData(object):
         self.image_error_maps = None # will be built by: self.build_image_error_buffer()
         self.to(self.device)
         self.downscale_factor = 1.0
-        self.load_depth_from_video()
+        self.load_flare_mask()
+        self.load_est_normals()
+        #self.load_depth_from_video()
         
                 
     @property
@@ -252,7 +254,60 @@ class CameraData(object):
         self.human_mask_filepaths = np.array(human_mask_filepaths)
         self.vehicle_mask_filepaths = np.array(vehicle_mask_filepaths)
         self.sky_mask_filepaths = np.array(sky_mask_filepaths)
-        
+
+    def load_flare_mask(self):
+        flares = []
+        for ix, fname in tqdm(
+            enumerate(self.img_filepaths),
+            desc="Loading flare masks",
+            dynamic_ncols=True,
+            total=len(self.img_filepaths),
+        ):
+            fname_p = fname.replace(".jpg"," (1).jpg").replace("images","flare")
+            flare = Image.open(fname_p).convert("RGB")
+            # resize them to the load_size
+            flare = flare.resize(
+                (self.load_size[1], self.load_size[0]), Image.BILINEAR
+            )
+            # undistort the images
+            if self.undistort:
+                if ix == 0:
+                    print("undistorting rgb")
+                flare = cv2.undistort(
+                    np.array(flare),
+                    self.intrinsics[ix].numpy(),
+                    self.distortions[ix].numpy(),
+                )
+            flares.append(flare)
+        self.flares = flares = torch.from_numpy(np.stack(flares, axis=0)) / 255
+
+    def load_est_normals(self):
+        flares = []
+        for ix, fname in tqdm(
+            enumerate(self.img_filepaths),
+            desc="Loading flare masks",
+            dynamic_ncols=True,
+            total=len(self.img_filepaths),
+        ):
+            fname_p = fname.replace("images","normals")
+            flare = Image.open(fname_p).convert("RGB")
+            # resize them to the load_size
+            flare = flare.resize(
+                (self.load_size[1], self.load_size[0]), Image.BILINEAR
+            )
+            # undistort the images
+            if self.undistort:
+                if ix == 0:
+                    print("undistorting rgb")
+                flare = cv2.undistort(
+                    np.array(flare),
+                    self.intrinsics[ix].numpy(),
+                    self.distortions[ix].numpy(),
+                )
+            flares.append(flare)
+        self.normals = torch.from_numpy(np.stack(flares, axis=0)) / 255
+
+
     def load_images(self):
         images = []
         for ix, fname in tqdm(
@@ -532,7 +587,34 @@ class CameraData(object):
         dynamic_mask, human_mask, vehicle_mask = None, None, None
         pixel_coords, normalized_time = None, None
         egocar_mask = None
-        
+
+        if self.flares is not None:
+            flare = self.flares[frame_idx]
+            if self.downscale_factor != 1.0:
+                flare = (
+                    torch.nn.functional.interpolate(
+                        flare.unsqueeze(0).permute(0, 3, 1, 2),
+                        scale_factor=self.downscale_factor,
+                        mode="bicubic",
+                        antialias=True,
+                    )
+                    .squeeze(0)
+                    .permute(1, 2, 0)
+                )  
+        if self.normals is not None: 
+            normals = self.normals[frame_idx]
+            if self.downscale_factor != 1.0:
+                normals = (
+                    torch.nn.functional.interpolate(
+                        normals.unsqueeze(0).permute(0, 3, 1, 2),
+                        scale_factor=self.downscale_factor,
+                        mode="bicubic",
+                        antialias=True,
+                    )
+                    .squeeze(0)
+                    .permute(1, 2, 0)
+                )                       
+
         if self.images is not None:
             rgb = self.images[frame_idx]
             if self.downscale_factor != 1.0:
@@ -720,6 +802,8 @@ class CameraData(object):
             "vehicle_masks": vehicle_mask,
             "egocar_masks": egocar_mask,
             "lidar_depth_map": lidar_depth_map,
+            "flare":flare,
+            "normals":normals,
         }
         image_infos = {k: v for k, v in _image_infos.items() if v is not None}
 

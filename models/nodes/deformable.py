@@ -84,6 +84,7 @@ class DeformableNodes(RigidNodes):
             rgbs = torch.clamp(rgbs + 0.5, 0.0, 1.0)
         else:
             rgbs = torch.sigmoid(colors[:, 0, :])
+        rgbs = torch.cat([rgbs , self._emitting_light], dim=-1)
         
         valid_mask = self.get_pts_valid_mask()
             
@@ -182,6 +183,7 @@ class DeformableNodes(RigidNodes):
             self._quats = Parameter(torch.cat([self._quats, new_gaussian["_quats"]], dim=0))
             self._features_dc = Parameter(torch.cat([self._features_dc, new_gaussian["_features_dc"]], dim=0))
             self._features_rest = Parameter(torch.cat([self._features_rest, new_gaussian["_features_rest"]], dim=0))
+            self._emitting_light = Parameter(torch.cat([self._emitting_light, new_gaussian["_emitting_light"]], dim=0))
             self._opacities = Parameter(torch.cat([self._opacities, new_gaussian["_opacities"]], dim=0))
             # keeps original point ids
             self.point_ids = torch.cat([self.point_ids, torch.full_like(new_gaussian["point_ids"], ins_id)], dim=0)
