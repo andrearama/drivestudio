@@ -7,6 +7,7 @@ import logging
 import numpy as np
 import torch
 import torch.nn as nn
+import math
 
 import kornia
 from enum import IntEnum
@@ -56,6 +57,8 @@ def lr_scheduler_fn(
                 (step - cfg.warmup_steps) / (cfg.max_steps - cfg.warmup_steps), 0, 1
             )
             lr = np.exp(np.log(lr_init) * (1 - t) + np.log(lr_final) * t)
+        if math.isnan(lr):
+            lr = 0.0
         return lr  # divided by lr_init because the multiplier is with the initial learning rate
 
     return func
@@ -691,7 +694,7 @@ class BasicTrainer(nn.Module):
             depth_loss = depth_loss * self.losses_dict.depth.w * decay_weight
             loss_dict.update({"depth_loss": depth_loss})
 
-            #depth_smooth_loss2 = 0.01*self.gradient_smoothness_loss(pred_depth, alpha=1.0, shift_size=5)
+            #depth_smooth_loss2 = 0.001*self.gradient_smoothness_loss(pred_depth, alpha=1.0, shift_size=5)
             #loss_dict.update({"depth_smooth_loss2": depth_smooth_loss2})
 
 

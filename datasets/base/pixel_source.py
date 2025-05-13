@@ -408,16 +408,27 @@ class CameraData(object):
         self.normalized_time = normalized_time.to(self.device)
 
     def load_depth_from_video(self):
-        disparity_from_video_front = np.load("/home/dense/daniel/drivestudio/drivestudio/data/nuscenes/raw/nuscenes/depths_front_scene814/scene814_video_depths.npz")['depths'] 
-        #disparity_from_video_front = np.load("/external/10g/carlnas/fs1/outputs_video_depths/814_enhanced/nuscenes_814_enhanced_depths.npz")['depths'] 
-        depth_from_video_front = 1/disparity_from_video_front
-        depth_from_video_front[disparity_from_video_front == 0] = 0
+        # Version 1 Front: Load disparity map front from one of the defined paths and transform it into depth map front
+        #disparity_from_video_front = np.load("/home/dense/daniel/drivestudio/drivestudio/data/nuscenes/raw/nuscenes/depths_front_scene814/scene814_video_depths.npz")['depths'] #(source: video-depth-anything)
+        #disparity_from_video_front = np.load("/external/10g/carlnas/fs1/outputs_video_depths/814_enhanced/nuscenes_814_enhanced_depths.npz")['depths'] #(source: sci (enhancement) + video-depth-anything)
+
+        #depth_from_video_front = 1/disparity_from_video_front
+        #depth_from_video_front[disparity_from_video_front == 0] = 0
+        #self.depth_from_video_front = torch.tensor(depth_from_video_front, dtype=torch.float32, device="cuda")
+
+        #Version 2 Front: Load depth map front from defined path
+        depth_from_video_front = np.load("/home/dense/daniel/drivestudio/drivestudio/data/nuscenes/processed_10Hz/trainval/767/output_depths_front.npz")['output_depths']  #(source: md4all)
         self.depth_from_video_front = torch.tensor(depth_from_video_front, dtype=torch.float32, device="cuda")
 
-        #disparity_from_video_back = np.load("/home/dense/daniel/drivestudio/drivestudio/data/nuscenes/raw/nuscenes/depths_back_scene814/nuscenes_814_back_depths.npz")['depths'] 
+        # Version 1 Back: Load disparity map back from the defined path and transform it into depth map front
+        #disparity_from_video_back = np.load("/home/dense/daniel/drivestudio/drivestudio/data/nuscenes/raw/nuscenes/depths_back_scene814/nuscenes_814_back_depths.npz")['depths']  #(source: video-depth-anything)
         #depth_from_video_back = 1/disparity_from_video_back
         #depth_from_video_back[disparity_from_video_back == 0] = 0
         #self.depth_from_video_back = torch.tensor(depth_from_video_back, dtype=torch.float32, device="cuda")
+
+        #Version 2 Back: Load depth map back from defined path
+        depth_from_video_back = np.load("/home/dense/daniel/drivestudio/drivestudio/data/nuscenes/processed_10Hz/trainval/767/output_depths_back.npz")['output_depths'] #(source: md4all)
+        self.depth_from_video_back = torch.tensor(depth_from_video_back, dtype=torch.float32, device="cuda")
 
         
     def build_image_error_buffer(self) -> None:
@@ -514,7 +525,8 @@ class CameraData(object):
         lidar_depth_map_nonzero = lidar_depth_map[lidar_depth_map > 0]  
         lidar_median = torch.median(lidar_depth_map_nonzero)
         video_depth_median = torch.median(depth_from_video[lidar_depth_map > 0])
-        normalized_depth = depth_from_video * ((lidar_median / video_depth_median) * depth_map_scaling) + depth_map_shift
+        #normalized_depth = depth_from_video * ((lidar_median / video_depth_median) * depth_map_scaling) + depth_map_shift
+        normalized_depth = depth_from_video * (lidar_median / video_depth_median)
         mask = normalized_depth > 50
         normalized_depth[mask] = torch.where(lidar_depth_map[mask] > 0, lidar_depth_map[mask], torch.tensor(0.0, device=normalized_depth.device))
         return normalized_depth.to("cpu")

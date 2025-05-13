@@ -16,6 +16,7 @@ class RigidNodes(VanillaGaussians):
         self,
         **kwargs
     ):
+        self.position_adjustments = kwargs.pop("position_adjustments", False)
         super().__init__(**kwargs)
         
     @property
@@ -83,7 +84,8 @@ class RigidNodes(VanillaGaussians):
         self._scales = Parameter(torch.log(avg_dist.repeat(1, 3)))
         self._quats = Parameter(random_quat_tensor(self.num_points).to(self.device))
         dim_sh = num_sh_bases(self.sh_degree)
-        
+        self.instances_trans_orig = Parameter(instances_trans.clone(), requires_grad=False)
+        self.instances_quats_orig = Parameter(instances_quats.clone(), requires_grad=False)
         # pose refinement
         self.instances_quats = Parameter(self.quat_act(instances_quats)) # (num_frame, num_instances, 4)
         self.instances_trans = Parameter(instances_trans)              # (num_frame, num_instances, 3)
@@ -324,6 +326,47 @@ class RigidNodes(VanillaGaussians):
             print(name)
 
 
+    def adjust_translation(self, cur_frame):
+        indices = [cur_frame - 2, cur_frame - 1, cur_frame + 1, cur_frame + 2]
+        valid_indices = [i for i in indices if 0 <= i < len(self.instances_trans)]
+        shifts = [self.instances_trans[i] - self.instances_trans_orig[i] for i in valid_indices]
+        mean_shift = torch.mean(torch.stack(shifts), dim=0) if shifts else torch.zeros_like(self.instances_trans[cur_frame], device=self.instances_trans.device)
+        return self.instances_trans[cur_frame] + mean_shift
+    
+
+    def get_safe_index(self, i, max_len):
+        # Clamp the index to stay within valid bounds
+        return min(max(i, 0), max_len - 1)
+
+    def adjust_rotation(self, cur_frame):
+        max_idx = len(self.instances_quats)
+
+        # Get neighbor indices, clamped within bounds
+        idx0 = self.get_safe_index(cur_frame - 2, max_idx)
+        idx1 = self.get_safe_index(cur_frame - 1, max_idx)
+        idx2 = self.get_safe_index(cur_frame + 1, max_idx)
+        idx3 = self.get_safe_index(cur_frame + 2, max_idx)
+
+        # Load original reference quaternions
+        q0 = self.instances_quats_orig[idx0]
+        q1 = self.instances_quats_orig[idx1]
+        q2 = self.instances_quats_orig[idx2]
+        q3 = self.instances_quats_orig[idx3]
+
+        # Interpolate between left and right pairs
+        q_left = interpolate_quats(q0, q1, 0.5)
+        q_right = interpolate_quats(q2, q3, 0.5)
+
+        # Final interpolation between left and right averages
+        mean_shift_q = interpolate_quats(q_left, q_right, 0.5)
+
+        # Blend current quaternion with the computed mean shift
+        adjusted_q = interpolate_quats(self.instances_quats[cur_frame], mean_shift_q, 1.0)
+
+        return adjusted_q
+
+        
+
     def transform_means(self, means: torch.Tensor, avg_scale=0.0, direction="none") -> torch.Tensor:
         """
         Transform the means of instances to world space
@@ -342,8 +385,11 @@ class RigidNodes(VanillaGaussians):
         if cur_frame in test_list:
             quats_cur_frame = quats_cur_frame.detach()
             trans_cur_frame = trans_cur_frame.detach()
+            if self.position_adjustments:
+                trans_cur_frame = self.adjust_translation(cur_frame)
+                quats_cur_frame = self.adjust_rotation(cur_frame)
         #######
-
+      
         if direction in ["prev", "next"] and (
             self.cur_frame - 1 > 0 and self.cur_frame + 1 < self.num_frames
         ):
@@ -381,6 +427,14 @@ class RigidNodes(VanillaGaussians):
         assert quats.shape[0] == self.point_ids.shape[0], \
             "its a bug here, we need to pass the mask for points_ids"
         global_quats_cur_frame = self.instances_quats[self.cur_frame]
+
+        test_list = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150, 155, 160, 165, 170, 175, 180, 185, 190]
+
+        if self.cur_frame in test_list:
+            global_quats_cur_frame = global_quats_cur_frame.detach()
+            if self.position_adjustments:
+                global_quats_cur_frame = self.adjust_rotation(self.cur_frame)
+        
         if direction in ["prev", "next"] and (
             self.cur_frame - 1 > 0 and self.cur_frame + 1 < self.num_frames
         ):  
@@ -514,6 +568,8 @@ class RigidNodes(VanillaGaussians):
         self.point_ids = state_dict.pop("points_ids")
         self.instances_size = state_dict.pop("instances_size")
         self.instances_fv = state_dict.pop("instances_fv")
+        self.instances_trans_orig = state_dict.pop("instances_trans_orig", None)
+        self.instances_quats_orig = state_dict.pop("instances_quats_orig", None)
         self.instances_trans = Parameter(
             torch.zeros(self.num_frames, self.num_instances, 3, device=self.device)
         )
