@@ -20,6 +20,8 @@ from datasets.base.pixel_source import ScenePixelSource
 
 from models.gaussians.basics import *
 
+from models.nn.networks import NeuradDecoder,NeuradDecoderFlare
+
 from models.trainers.utils import get_loss_normal_tensor, get_loss_mask_flare
 from models.nn.networks import BigKernel
 
@@ -85,6 +87,9 @@ class BasicTrainer(nn.Module):
         model_flare: bool = False,
         use_emitted: bool = False,
         use_normals: bool = False,
+        use_decoder: bool = False,
+        highest_hw: list[int] = None,
+        dataset_type: str = None,
         device=None
     ):
         super().__init__()
@@ -105,6 +110,9 @@ class BasicTrainer(nn.Module):
         self.model_flare = model_flare
         self.use_emitted = use_emitted
         self.use_normals = use_normals
+        self.use_decoder = use_decoder
+        self.highest_hw = highest_hw
+        self.dataset_type = dataset_type
         
         # dataset infos
         self.num_train_images = num_train_images
@@ -189,15 +197,24 @@ class BasicTrainer(nn.Module):
         raise NotImplementedError("Please implement the _init_models function")
     
     def initialize_optimizer(self) -> None:
-        
-        if self.learn_fixednoise :
+        if self.dataset_type == "waymo":
+            camera_names = ["front_camera", "front_left_camera", "front_right_camera","left_camera","right_camera"]
+        elif self.dataset_type == "nuscenes":
             camera_names = ["CAM_FRONT", "CAM_FRONT_LEFT", "CAM_FRONT_RIGHT", "CAM_BACK", "CAM_BACK_LEFT","CAM_BACK_RIGHT"]
+        else:
+            raise Exception("not supported")
+        
+        if self.learn_fixednoise :          
             self.custom_tensor = {}
             for cam_name in camera_names:
-                self.custom_tensor[cam_name] = torch.nn.Parameter(0.01*torch.randn(450, 800, 6).to(self.device))
+                self.custom_tensor[cam_name] = torch.nn.Parameter(0.01*torch.randn(self.highest_hw[0], self.highest_hw[1], 6).to(self.device))
 
         if self.model_flare:
-            self.flare_kernel = BigKernel().to("cuda:1")
+            self.flare_kernel = BigKernel().to("cuda")
+            self.flare_decoder = NeuradDecoderFlare(highest_hw = self.highest_hw).to("cuda")
+
+        if self.use_decoder:
+            self.decoder = NeuradDecoder().to("cuda")            
 
         # get param groups first
         self.param_groups = {}
@@ -265,6 +282,13 @@ class BasicTrainer(nn.Module):
                 'params': self.flare_kernel.parameters(),
                 'name': 'flare',
                 'lr': 0.001,  # Match your custom tensor learning rate
+                'eps': 1e-15,
+                'weight_decay': 0
+            })
+            groups.append({
+                'params': self.flare_decoder.parameters(),
+                'name': 'flare',
+                'lr': 0.0005,  # Match your custom tensor learning rate
                 'eps': 1e-15,
                 'weight_decay': 0
             })    
@@ -552,6 +576,8 @@ class BasicTrainer(nn.Module):
                 rendered_emtted_light = False
             elif renders.shape[-1] == 7:
                 rendered_rgb, rendered_emtted_light, rendered_depth = torch.split(renders, [3, 3, 1], dim=-1)
+            elif renders.shape[-1] == 7+6:
+                rendered_rgb, rendered_emtted_light, rendered_depth = torch.split(renders, [3, 9, 1], dim=-1)
             else:
                 print(renders.shape[-1])
                 assert False
@@ -842,19 +868,28 @@ class BasicTrainer(nn.Module):
         # fixed noise loss : 
         if self.learn_fixednoise : 
             custom_tensor_loss = get_loss_normal_tensor(self.custom_tensor[cam_infos['cam_name']])
-            #print("custom_tensor_loss",custom_tensor_loss)
             loss_dict.update({"custom_tensor_loss" : custom_tensor_loss})
 
-        # flare loss
-        if self.model_flare:
-            if "flare" in outputs:
+        if "flare" in outputs: 
+            if self.step < 10000:
+                #flare_loss = torch.mean(torch.square(outputs["flare"])) 
                 flare_loss = 10*get_loss_mask_flare(image_infos, outputs["flare"], use_both = True)
+                loss_dict.update({"flare_loss" : 1 *flare_loss})
+
+        if self.model_flare:
+            mm = outputs["emitted_light"][...,:3]
+            mmm = (image_infos["pixels"] > 0.98)* 1.0
+            mmm_loss = torch.mean(torch.square(mm - mmm))
+            loss_dict.update({"mmm_loss" : self.losses_dict.rgb.w *mmm_loss}) 
+
+            if "flare" in outputs:
+                flare_loss = 0*get_loss_mask_flare(image_infos, outputs["flare"], use_both = True)
                 loss_dict.update({"flare_loss" : self.losses_dict.rgb.w *flare_loss})
 
         if self.use_normals:
             if self.step > 6000 : 
                 normal_loss_consistency = torch.mean(torch.square(outputs["normals_depth"] - outputs["normals_splats"]))
-                normal_losses = 0.1*normal_loss_consistency
+                normal_losses = 0.0001*normal_loss_consistency
 
                 #normal_losses += 0.01*torch.mean(outputs["scale_normals"]**2)
 

@@ -98,7 +98,7 @@ class RigidNodes(VanillaGaussians):
         self._features_dc = Parameter(shs[:, 0, :])
         self._features_rest = Parameter(shs[:, 1:, :])
         self._opacities = Parameter(torch.logit(0.1 * torch.ones(self.num_points, 1, device=self.device)))
-        self._emitting_light = Parameter(0.1*shs[:, 0, :])
+        self._emitting_light = Parameter(0.1*torch.cat([shs[:, 0, :]]*3,-1) )
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = self.get_gaussian_param_groups()

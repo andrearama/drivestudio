@@ -161,6 +161,8 @@ def main(args):
         # "SMPLNodes_depths",
         # "mask"
     ]
+    if True:
+        render_keys += ["normals_splats", "normals_depth","normals","flares"]
     if cfg.render.vis_lidar:
         render_keys.insert(0, "lidar_on_images")
     if cfg.render.vis_sky:
@@ -329,7 +331,7 @@ def main(args):
         #------------------------    Cache Image Error    ---------------------------
         if (
             step > 0 and trainer.optim_general.cache_buffer_freq > 0
-            and step % trainer.optim_general.cache_buffer_freq == 0
+            and step % trainer.optim_general.cache_buffer_freq == 0 and False
         ):
             logger.info("Caching image error...")
             trainer.set_eval()

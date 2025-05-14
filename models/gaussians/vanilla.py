@@ -71,7 +71,7 @@ class VanillaGaussians(nn.Module):
         self._opacities = torch.zeros(1, 1, device=self.device)
         self._features_dc = torch.zeros(1, 3, device=self.device)
         self._features_rest = torch.zeros(1, num_sh_bases(self.sh_degree) - 1, 3, device=self.device)
-        self._emitting_light = torch.zeros(1, 3, device=self.device)
+        self._emitting_light = torch.zeros(1, 3*3, device=self.device)
         
     @property
     def sh_degree(self):
@@ -105,7 +105,7 @@ class VanillaGaussians(nn.Module):
         self._features_dc = Parameter(shs[:, 0, :])
         self._features_rest = Parameter(shs[:, 1:, :])
         self._opacities = Parameter(torch.logit(0.1 * torch.ones(self.num_points, 1, device=self.device)))
-        self._emitting_light = Parameter(0.1*shs[:, 0, :])
+        self._emitting_light = Parameter(0.1*torch.cat([shs[:, 0, :]]*3,-1) )
         
     @property
     def colors(self):

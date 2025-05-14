@@ -264,6 +264,7 @@ class CameraData(object):
             total=len(self.img_filepaths),
         ):
             fname_p = fname.replace(".jpg"," (1).jpg").replace("images","flare")
+            fname_p = fname.replace("/images","/flare7kpp/flare")
             flare = Image.open(fname_p).convert("RGB")
             # resize them to the load_size
             flare = flare.resize(

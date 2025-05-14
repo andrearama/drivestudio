@@ -280,20 +280,15 @@ class MultiTrainer(BasicTrainer):
             gs = self.collect_gaussians(cam=self.processed_cam, image_ids=image_infos["img_idx"].flatten()[0], avg_scale = 0.0, direction = "none")
             final_output = self.render_outputs(image_infos, gs, self.processed_cam)
 
-        final_output["emitted_light"] = torch.abs(final_output["emitted_light"])
         cam_name = camera_infos['cam_name']
 
         if self.use_emitted:
             final_output["rgb"] = final_output["rgb"] + final_output["emitted_light"]
 
         if self.learn_fixednoise:
-            if list(final_output["rgb"].shape) == [450, 800, 3] : 
+            if list(final_output["rgb"].shape) == [self.highest_hw[0], self.highest_hw[1], 3] : 
                 final_output["rgb"] =  final_output["rgb"] + self.custom_tensor[cam_name][...,:3] + self.custom_tensor[cam_name][...,3:]*final_output["rgb"]
 
-        if self.model_flare:
-            if list(final_output["rgb"].shape) == [450, 800, 3] : 
-                    final_output["flare"] = self.flare_kernel(final_output["emitted_light"].to("cuda:1") )[0].to("cuda:0").permute(1,2,0)
-                    final_output["rgb"] =  final_output["rgb"] + final_output["flare"]
         
         if self.use_normals:
             normals_depth = depth_to_world_normals_opengl_mm4(20*final_output["depth"][...,0], camera_infos["camera_to_world"])*0.5 + 0.5
@@ -315,9 +310,29 @@ class MultiTrainer(BasicTrainer):
             final_output["normals_splats"] = outputs_v_normal_corrected["rgb_gaussians"]
             min_values, min_indices = torch.min(gs[1].scales, dim=1)
             final_output["scale_normals"] = min_values
+        
+
+        if self.model_flare:
+            if list(final_output["rgb"].shape) == [self.highest_hw[0], self.highest_hw[1], 3] : 
+                if self.use_decoder:
+                    final_output["rgb"] =  final_output["rgb"] + final_output["flare"]
+                else:
+                    #final_output["flare"] = self.flare_kernel(final_output["active_lighting"])[0].permute(1,2,0)
+                    #final_output["rgb"] =  final_output["rgb"] + final_output["flare"]
+                    mask_max  = (final_output["rgb"] > 0.95)* 1.0
+                    if self.step < 15000 : 
+                        mask_max  = (image_infos["pixels"] > 0.95)* 1.0
+                    else:
+                        mask_max  = final_output["emitted_light"][...,:3]
+
+                    if list(final_output["rgb"].shape) == [self.highest_hw[0], self.highest_hw[1], 3] and self.step > 5000: 
+                        final_output["flare"] = self.flare_decoder(torch.cat([final_output["emitted_light"][...,3:], mask_max.detach(), final_output["depth"], camera_infos["cam_id"][...,None].to("cuda")],-1) )[0].permute(1,2,0)
+                        final_output["rgb"] =  final_output["rgb"] + final_output["flare"]
             
-        if cam_name in ["CAM_FRONT", "CAM_BACK"]:
-            final_output["is_frontback"] = True            
+        if cam_name in ["CAM_FRONT", "CAM_BACK", "front_camera", "front_left_camera", "front_right_camera"]:
+            final_output["is_frontback"] = True
+        else:
+            final_output["is_frontback"] = False            
         
         final_output["rgb"] = torch.clamp(final_output["rgb"], 0, 1)
         return final_output
@@ -347,6 +362,14 @@ class MultiTrainer(BasicTrainer):
         outputs["rgb"] = self.affine_transformation(
             outputs["rgb_gaussians"] + outputs["rgb_sky"] * (1.0 - outputs["opacity"]), image_infos
         )
+        
+        if self.use_decoder:
+            M,B, outputs["flare"] = self.decoder(outputs["emitted_light"],intrinsics=pc_displaced.Ks, extrinsics=pc_displaced.camtoworlds_gt)           
+            outputs["rgb"] = torch.einsum('bhwij,bhwj->bhwi', M, outputs["rgb"][None,...] ) + B
+            outputs["rgb"] = outputs["rgb"][0]
+                                   
+        else:
+            outputs["active_lighting"] = torch.abs(outputs["emitted_light"][...,:3])
         
         if not self.training and self.render_each_class:
             with torch.no_grad():

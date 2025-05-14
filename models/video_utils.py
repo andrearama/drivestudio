@@ -118,7 +118,7 @@ def render(
     cam_names, cam_ids = [], []
 
     #my 
-    normals_splats, normals_depth, normals = [], [], []
+    normals_splats, normals_depth, normals, flares = [], [], [], []
 
     if compute_metrics:
         psnrs, ssim_scores, lpipss = [], [], []
@@ -130,9 +130,11 @@ def render(
     with torch.no_grad():
         indices = vis_indices if vis_indices is not None else range(len(dataset))
         camera_downscale = trainer._get_downscale_factor()
+        print("camera_downscale render vis", camera_downscale)
         for i in tqdm(indices, desc=f"rendering {dataset.split}", dynamic_ncols=True):
             # get image and camera infos
             image_infos, cam_infos = dataset.get_image(i, camera_downscale)
+            print("val cam_infos", cam_infos["height"],cam_infos["width"])
             for k, v in image_infos.items():
                 if isinstance(v, Tensor):
                     image_infos[k] = v.cuda(non_blocking=True)
@@ -227,7 +229,8 @@ def render(
                 normals_depth.append(get_numpy(results["normals_depth"]))
             if "normals" in image_infos:
                 normals.append(get_numpy(image_infos["normals"]))
-
+            if "flare" in results:
+                flares.append(get_numpy(results["flare"]))
             # ------------- lidar ------------- #
             if "lidar_depth_map" in image_infos:
                 depth_map = image_infos["lidar_depth_map"]
@@ -387,13 +390,13 @@ def render(
         results_dict["SMPLNodes_opacities"] = SMPLNodes_opacities
     if len(Dynamic_opacities) > 0:
         results_dict["Dynamic_opacities"] = Dynamic_opacities
-
+    #my
     if len(normals_splats) > 0:
         results_dict["normals_splats"] = normals_splats
     if len(normals_depth) > 0:
         results_dict["normals_depth"] = normals_depth
-    else:
-        asddsd
+    if len(flares) > 0 :
+        results_dict["flares"]= flares
     if len(image_infos) > 0:
         results_dict["image_infos"] = image_infos
 

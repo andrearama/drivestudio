@@ -20,7 +20,7 @@ def get_loss_normal_tensor(tensor) :
 def get_loss_mask_flare(image_infos, flare, use_both = False):
     assert ( list(image_infos["flare"].shape) == list(flare.shape) )
     if list(flare.shape) != [450, 800, 3]  :
-        return 0.0
+        return 0.0 * torch.sum(flare)
      
     is_flare = image_infos["flare"] 
 
