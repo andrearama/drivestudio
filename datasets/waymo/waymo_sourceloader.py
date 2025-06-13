@@ -32,6 +32,10 @@ OPENCV2DATASET = np.array(
     [[0, 0, 1, 0], [-1, 0, 0, 0], [0, -1, 0, 0], [0, 0, 0, 1]]
 )
 
+WAYMO2NUSCENES = np.array(
+    [[0,-1,0,0], [0,0,-1,0], [1,0,0,0], [0, 0, 0, 1]]
+)
+
 # Waymo Camera List:
 # 0: front_camera
 # 1: front_left_camera
@@ -100,6 +104,7 @@ class WaymoCameraData(CameraData):
             # transformation:
             #   (opencv_cam -> waymo_cam -> waymo_ego_vehicle) -> current_world
             cam2world = ego_to_world @ cam_to_ego
+            cam2world = WAYMO2NUSCENES @ cam2world
             cam_to_worlds.append(cam2world)
             intrinsics.append(_intrinsics)
             distortions.append(_distortions)
@@ -134,6 +139,7 @@ class WaymoCameraData(CameraData):
             ego_to_world_current = np.loadtxt(os.path.join(data_path, "ego_pose", f"{t:03d}.txt"))
             ego_to_world = np.linalg.inv(ego_to_world_start) @ ego_to_world_current
             cam2world = ego_to_world @ cam_to_ego
+            cam2world = WAYMO2NUSCENES @ cam2world
             cam_to_worlds.append(cam2world)
 
         return torch.from_numpy(np.stack(cam_to_worlds, axis=0)).float()
@@ -228,6 +234,7 @@ class WaymoPixelSource(ScenePixelSource):
                 # the first ego pose as the origin of the world coordinate system.
                 obj_to_world = np.array(obj_to_world).reshape(4, 4)
                 obj_to_world = np.linalg.inv(ego_to_world_start) @ obj_to_world
+                obj_to_world = WAYMO2NUSCENES @ obj_to_world
                 instances_pose[frame_idx, int(k)] = np.array(obj_to_world)
                 instances_size[frame_idx, int(k)] = np.array(box_size)
         
@@ -367,6 +374,7 @@ class WaymoLiDARSource(SceneLidarSource):
             )
             # compute ego_to_world transformation
             lidar_to_world = np.linalg.inv(ego_to_world_start) @ ego_to_world_current
+            lidar_to_world = WAYMO2NUSCENES @ lidar_to_world
             lidar_to_worlds.append(lidar_to_world)
 
         self.lidar_to_worlds = torch.from_numpy(

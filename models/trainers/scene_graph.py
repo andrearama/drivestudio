@@ -282,9 +282,6 @@ class MultiTrainer(BasicTrainer):
 
         cam_name = camera_infos['cam_name']
 
-        if self.use_emitted:
-            final_output["rgb"] = final_output["rgb"] + final_output["emitted_light"]
-
         if self.learn_fixednoise:
             if list(final_output["rgb"].shape) == [self.highest_hw[0], self.highest_hw[1], 3] : 
                 final_output["rgb"] =  final_output["rgb"] + self.custom_tensor[cam_name][...,:3] + self.custom_tensor[cam_name][...,3:]*final_output["rgb"]
@@ -328,6 +325,11 @@ class MultiTrainer(BasicTrainer):
                     if list(final_output["rgb"].shape) == [self.highest_hw[0], self.highest_hw[1], 3] and self.step > 5000: 
                         final_output["flare"] = self.flare_decoder(torch.cat([final_output["emitted_light"][...,3:], mask_max.detach(), final_output["depth"], camera_infos["cam_id"][...,None].to("cuda")],-1) )[0].permute(1,2,0)
                         final_output["rgb"] =  final_output["rgb"] + final_output["flare"]
+
+                    else:
+                        final_output["flare"] = torch.zeros_like(final_output["rgb"])
+            else:
+                final_output["flare"] = torch.zeros_like(final_output["rgb"])
             
         if cam_name in ["CAM_FRONT", "CAM_BACK", "front_camera", "front_left_camera", "front_right_camera"]:
             final_output["is_frontback"] = True

@@ -611,6 +611,11 @@ def save_seperate_videos(
                     depth_visualizer(frame, opacity)
                     for frame, opacity in zip(frames, opacities)
                 ]
+            print(key)
+            print(frames[0].shape, frames[1].shape)
+            print([frames[iiii].shape for iiii in range(len(frames))] )
+
+            print(frames[0].min(), frames[0].max() )
             tiled_img = layout(frames, cam_names)
             if save_images:
                 if i == 0:

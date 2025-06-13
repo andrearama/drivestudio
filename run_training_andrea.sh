@@ -26,7 +26,6 @@ CUDA_VISIBLE_DEVICES=4 python tools/train.py \
     trainer.learn_fixednoise="True"\
     trainer.model_flare="True"\
     trainer.use_decoder="False"\
-    trainer.use_emitted="False"\
     trainer.use_normals="True"\
     trainer.dataset_type="nuscenes"\
     trainer.highest_hw="[300, 533]"\

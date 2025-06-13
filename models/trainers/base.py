@@ -85,7 +85,6 @@ class BasicTrainer(nn.Module):
         pixel_source: ScenePixelSource = None,
         learn_fixednoise: bool = False,
         model_flare: bool = False,
-        use_emitted: bool = False,
         use_normals: bool = False,
         use_decoder: bool = False,
         highest_hw: list[int] = None,
@@ -108,7 +107,6 @@ class BasicTrainer(nn.Module):
         self.device = device
         self.learn_fixednoise = learn_fixednoise
         self.model_flare = model_flare
-        self.use_emitted = use_emitted
         self.use_normals = use_normals
         self.use_decoder = use_decoder
         self.highest_hw = highest_hw

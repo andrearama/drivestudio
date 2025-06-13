@@ -4,7 +4,7 @@ end_timestep=-1 # end frame index, -1 for the last frame
 
 output_root="outputs/drivestudio/"
 project="drivestudio_night_scenes_waymo"
-expname="007_all"
+expname="007_all_fixed"
 scene_idx=007
 #scene_idx=763
 steps=$(seq 0 5 90)
@@ -26,7 +26,6 @@ CUDA_VISIBLE_DEVICES=1 python tools/train.py \
     trainer.learn_fixednoise="True"\
     trainer.model_flare="True"\
     trainer.use_decoder="False"\
-    trainer.use_emitted="False"\
     trainer.use_normals="True"\
     trainer.dataset_type="waymo"\
     trainer.highest_hw="[640, 960]"\
